@@ -325,15 +325,10 @@ def unresolved_rejections(bundle: Bundle, affected) -> dict[str, dict]:
     readable ledger entirely is not reported either — absence of evidence
     is not evidence of an unresolved rejection.
 
-    An agent's direct write (`origin: agent-direct`) is skipped: it is an
-    `accept` row by shape, but no owner decided anything, so it cannot be
-    what disposes of an owner's rejection."""
-    latest: dict[str, dict] = {}
-    for row in memory.events(bundle)[0]:
-        target = row.get("target")
-        if target in affected and row.get("origin") != "agent-direct":
-            latest[target] = row
-    return {cid: row for cid, row in latest.items() if row["event"] == "reject"}
+    The fold is `memory.latest_decisions`, shared with `proposals.dismiss`:
+    an agent's direct write is not a decision and is skipped by both."""
+    return {cid: row for cid, row in memory.latest_decisions(bundle, affected).items()
+            if row["event"] == "reject"}
 
 
 # --------------------------------------------------------------------------

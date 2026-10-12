@@ -786,6 +786,19 @@ def h_propose(t: Target, target: str, action: str, note: str,
     return out
 
 
+def _schema(bundle):
+    """The archetype `review accept` applies, for `write_direct` to call only
+    if a write reaches its schema check. An extraction plan naming an archetype
+    this install does not have is a refusal the caller can read, not a
+    FileNotFoundError through the MCP boundary."""
+    try:
+        return _archetype_for(bundle)
+    except FileNotFoundError as e:
+        raise ValueError(
+            f"{e} — the owner fixes `archetype` in meta/extraction-plan.md; "
+            "until then file the change with okfy_propose") from e
+
+
 def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
             content: str | None = None, patch: list[dict] | None = None,
             note: str = "", evidence: dict | None = None,
@@ -821,7 +834,7 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
         out = proposals.write_direct(
             t.bundle, concept_id, actor=actor, expect_sha256=expect_sha256,
             text=content or None, patch=patch, note=note, observed=observed,
-            archetype=_archetype_for(t.bundle))
+            archetype=functools.partial(_schema, t.bundle))
     except ValueError as e:
         env = _refusal_envelope(e)
         if env is None:

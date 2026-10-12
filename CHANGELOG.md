@@ -61,8 +61,10 @@ maintainer's.
 - The ledger row is an `accept` with `proposal: null`, `origin: agent-direct`, the
   agent as actor and `base_sha256`. Readers of `accept` rows see it as a content
   write: `release-check` counts it among the changes since the last package and
-  `okfy diff` lists the concept as protected. `okfy.update.unresolved_rejections`
-  skips it, because an agent's write is not the owner disposing of a rejection.
+  `okfy diff` lists the concept as protected. It is not a decision, though:
+  `okfy.update.unresolved_rejections` and `okfy dismiss` now read one shared
+  fold (`okfy.memory.latest_decisions`) that skips it, so an agent's write
+  neither disposes of an owner's rejection nor stops the owner dismissing it.
 - `okfy write <bundle> <concept_id> --as <actor> --expect <sha256|absent>
   (--from <file> | --patch-file <hunks.json>) [--note …]` is the CLI door. It
   refuses; it does not fall back.

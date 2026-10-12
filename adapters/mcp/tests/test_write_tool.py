@@ -132,6 +132,48 @@ def test_other_types_fall_back_to_a_proposal(root):
     assert env["evidence"] == {"kind": "agent-inference"}
 
 
+def test_fallback_takes_the_whole_text_of_a_verified_concept(root):
+    """okfy_write tells the agent to send owner fields back as okfy_show
+    returned them. On a concept an accept already verified, that text carries
+    `verified` — which must not turn the fallback into a refusal, while a
+    verification the agent made up still is one."""
+    from okfy import proposals
+    bundle, t = Bundle(root), Target(root)
+    meta, body = frontmatter.parse(with_body(DECISION, "\nAccepted once.\n"))
+    first = proposals.propose(bundle, meta, body, target="decisions/d1", actor=ACTOR)
+    proposals.accept(bundle, bundle.concept_id(first))
+    shown = handlers.h_show(t, concept_id="decisions/d1")
+    assert "verified:" in shown["content"]
+    out = handlers.h_write(t, "decisions/d1", ACTOR, shown["sha256"],
+                           content=shown["content"].replace("Accepted once.", "Edited."))
+    assert (out.get("channel"), out.get("persisted")) == ("proposal", True), out
+    assert "verified" not in Bundle(root).get(out["proposal"]).meta
+    forged = shown["content"].replace("by: human:", "by: human:someone-else-")
+    assert forged != shown["content"]
+    out = handlers.h_write(t, "decisions/d1", ACTOR, shown["sha256"], content=forged,
+                           note="second")
+    assert out["error"] == "E_PROPOSAL_EVIDENCE"
+
+
+def test_an_unknown_archetype_is_a_refusal_and_does_not_block_routing(root):
+    plan = root / "meta/extraction-plan.md"
+    plan.write_text(plan.read_text(encoding="utf-8").replace(
+        "archetype: decision-support", "archetype: no-such-archetype"), encoding="utf-8")
+    t = Target(root)
+    # a reviewed type never needs the schema: it is still routed to proposals/
+    d = handlers.h_show(t, concept_id="decisions/d1")
+    out = handlers.h_write(t, "decisions/d1", ACTOR, d["sha256"],
+                           content=with_body(DECISION, "\nRouted.\n"))
+    assert out["channel"] == "proposal"
+    # a direct type does: the refusal is the documented envelope, nothing lands
+    n = handlers.h_show(t, concept_id="notes/a")
+    before = (root / "notes/a.md").read_bytes()
+    out = handlers.safe_call(handlers.h_write, t, "notes/a", ACTOR, n["sha256"],
+                             content=with_body(NOTE_A, "\nNo schema.\n"))
+    assert set(out) == REFUSAL_KEYS and "no-such-archetype" in out["message"]
+    assert out["way_out"] and (root / "notes/a.md").read_bytes() == before
+
+
 def test_a_bundle_with_no_lane_proposes_everything(root):
     purpose = root / "meta/purpose.md"
     meta, body = frontmatter.parse(purpose.read_text(encoding="utf-8"))

@@ -2085,10 +2085,7 @@ def dismiss(bundle: Bundle, concept_id: str, reason: str) -> None:
         raise KeyError(f"concept not found: {concept_id}")
     if not reason.strip():
         raise ValueError("dismiss requires a reason — it is a reviewed decision")
-    latest = None
-    for row in memory.events(bundle)[0]:
-        if row.get("target") == concept_id:
-            latest = row
+    latest = memory.latest_decisions(bundle, {concept_id}).get(concept_id)
     if latest is None or latest["event"] != "reject":
         seen = "no memory.jsonl event" if latest is None else f"a {latest['event']!r} event"
         raise ValueError(
@@ -2155,6 +2152,12 @@ def _base_capture(bundle: Bundle, concept_id: str) -> tuple[Path, bytes | None, 
     return path, raw, (hashlib.sha256(raw).hexdigest() if raw is not None else ABSENT)
 
 
+def _text(raw: bytes) -> str:
+    """A concept file's bytes as the newline-normalised text `frontmatter.
+    parse` needs (the MCP adapter's `_read_concept` gives the same view)."""
+    return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _refuse_base_moved(concept_id: str, expect_sha256: str, current: str) -> None:
     """The optimistic check: the file must still be the bytes the author read
     (sha256 of the raw file, the digest `okfy_show` returns), or still absent
@@ -2178,7 +2181,20 @@ def propose_checked(bundle: Bundle, meta: dict, body: str, target: str,
     for a create). Check and filing share one `review_lock`, so the
     `base_sha256` the proposal records is the base the author actually saw."""
     with review_lock(bundle):
-        _refuse_base_moved(target, expect_sha256, _base_capture(bundle, target)[2])
+        _path, raw, current = _base_capture(bundle, target)
+        _refuse_base_moved(target, expect_sha256, current)
+        # The author was told to send owner fields back as they read them. A
+        # `verified` equal to the base's own is that, not a forged one, and
+        # accept re-derives it from the target regardless — so it is dropped
+        # here, as the patch path already drops it. Anything else still meets
+        # the forged-verification refusal in `_prepare_proposal`.
+        if raw is not None and "verified" in meta:
+            try:
+                inherited = frontmatter.parse(_text(raw))[0].get("verified")
+            except frontmatter.FrontmatterError:
+                inherited = None
+            if inherited is not None and meta["verified"] == inherited:
+                meta = {k: v for k, v in meta.items() if k != "verified"}
         return _materialize_proposal(bundle, _prepare_proposal(
             bundle, meta, body, target, action, note, **kw))
 
@@ -2231,7 +2247,10 @@ def write_direct(bundle: Bundle, concept_id: str, *, actor: str, expect_sha256: 
     here too, by the same functions: the injection and secret scans
     (`_refuse_scan`), `sources:` outside the corpus, and the archetype schema
     (`E_DIRECT_INVALID`). The rejected-content and duplicate-title gates are
-    about the review queue and do not run.
+    about the review queue and do not run. `archetype` may be a zero-argument
+    callable: it is called only once a write has reached the schema check, so
+    a caller that routes on `E_DIRECT_LANE` never loads a schema it would not
+    use.
 
     Recorded like any other content write: an `accept` row with
     `proposal: null`, `origin: agent-direct` and the AGENT as actor, a log
@@ -2280,14 +2299,17 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
     before: dict = {}
     before_body = ""
     if not create:
+        if raw is None:
+            # Read, then deleted (or never there): the base is ABSENT now.
+            _refuse_base_moved(concept_id, expect_sha256, current)
         resolved = path.resolve()
-        if raw is None or not resolved.is_relative_to(bundle.root) \
+        if not resolved.is_relative_to(bundle.root) \
                 or bundle.concept_id(resolved) != concept_id:
             raise ValueError(
-                f"{E_DIRECT_TARGET}: no concept has the id {concept_id!r} — "
-                f"check the id, or pass expect_sha256={ABSENT!r} to create it")
-        before, before_body = frontmatter.parse(
-            raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"))
+                f"{E_DIRECT_TARGET}: {concept_id!r} is not a concept's own id "
+                "(it resolves to another path) — use the id the concept was "
+                "read under")
+        before, before_body = frontmatter.parse(_text(raw))
         if before.get("type") not in types:
             raise ValueError(
                 f"{E_DIRECT_LANE}: {concept_id} has type {before.get('type')!r}, "
@@ -2333,6 +2355,8 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
     _refuse_scan(concept_id, _collect_scan_strings(
         meta, body, note=note, target=concept_id, patch_hunks=hunks))
     _check_proposal_sources(bundle, meta)
+    if callable(archetype):
+        archetype = archetype()
     if archetype is not None and archetype_applies(concept_id):
         r = Report()
         _check_archetype(Concept(concept_id, path, meta, body), archetype, r)

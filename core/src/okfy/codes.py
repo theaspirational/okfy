@@ -1327,8 +1327,8 @@ CODES: dict[str, dict] = {
     },
     "E_DIRECT_TARGET": {
         "kind": "error",
-        "summary": "a direct write names a concept id that does not exist (or is not the concept's own id), or sends a patch together with expect_sha256=absent",
-        "way_out": "check the id; pass expect_sha256=absent with content to create a concept",
+        "summary": "a direct write names an id that is not the concept's own (it resolves to another path), or sends a patch together with expect_sha256=absent",
+        "way_out": "use the id the concept was read under; pass expect_sha256=absent with content to create a concept",
     },
     "E_DIRECT_RETYPE": {
         "kind": "error",

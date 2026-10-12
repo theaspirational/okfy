@@ -52,6 +52,7 @@ MUTATES: dict[str, bool] = {
     "review accept": True,
     "review reject": True,
     "refine": True,
+    "write": True,            # an agent's direct write; a refused one writes nothing, but the verb's intent is a write
     "dismiss": True,          # v0.26 audit A3: owner disposition — writes a ledger row + log line
     "stale": True,            # default sets/clears the stale flag; `--due` alone is a read-only listing, but the leaf covers both
     "eval run": True,

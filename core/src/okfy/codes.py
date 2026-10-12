@@ -42,7 +42,7 @@ CODES: dict[str, dict] = {
     },
     "E_PROPOSAL_TRUNCATED": {
         "kind": "error",
-        "summary": "MCP okfy_propose `content`'s frontmatter block opens with "
+        "summary": "MCP okfy_propose or a direct write's `content`'s frontmatter block opens with "
                    "`---` but never closes (or ends mid-line inside it) — the "
                    "text was cut off before the write finished, not malformed",
         "way_out": "resend the whole text; if your output limit is the cause, "
@@ -77,6 +77,26 @@ CODES: dict[str, dict] = {
         "kind": "error",
         "summary": 'meta/purpose.md `write_policy` is not exactly "proposals" or "direct"',
         "way_out": "set write_policy to exactly one of the two literals — the pre-commit hook matches the literal, so a near-miss disables the gate silently",
+    },
+    "E_DIRECT_POLICY": {
+        "kind": "error",
+        "summary": "meta/purpose.md declares a `direct` block but write_policy is not `proposals`, so the block does nothing",
+        "way_out": "remove `direct`, or set write_policy: proposals",
+    },
+    "E_DIRECT_KEY": {
+        "kind": "error",
+        "summary": "meta/purpose.md `direct` is not a mapping, or has a key other than `types`",
+        "way_out": "write it as `direct: {types: [<type>, ...]}` and remove any other key",
+    },
+    "E_DIRECT_TYPE": {
+        "kind": "error",
+        "summary": "meta/purpose.md `direct.types` is not a non-empty list of type names, or lists a type that is not a declared type (extraction-plan.md `types`; under --strict-schema also the archetype's canonical_types)",
+        "way_out": "list real concept types, or declare the type in meta/extraction-plan.md `types`",
+    },
+    "W_DIRECT_TYPE": {
+        "kind": "warning",
+        "summary": "meta/purpose.md `direct.types` lists a type outside the archetype's canonical_types while the bundle declares no `types` of its own, so the lane may never open for it",
+        "way_out": "fix the name, or declare the type in meta/extraction-plan.md `types`; becomes E_DIRECT_TYPE under --strict-schema",
     },
     "E_ACCEPTANCE_SHAPE": {
         "kind": "error",
@@ -1294,6 +1314,51 @@ CODES: dict[str, dict] = {
         "kind": "warning",
         "summary": "a `categories` description contains a newline or other control character (it is copied verbatim into the resident index and could inject index lines) or is longer than 200 characters; always a warning, at every strictness",
         "way_out": "rewrite the description as one plain line of at most 200 characters",
+    },
+    "E_DIRECT_DISABLED": {
+        "kind": "error",
+        "summary": "a direct write (`okfy write`, core write_direct) was sent to a bundle whose meta/purpose.md lists no `direct.types`",
+        "way_out": "file a proposal instead (okfy propose / okfy_propose); MCP okfy_write does this by itself",
+    },
+    "E_DIRECT_LANE": {
+        "kind": "error",
+        "summary": "a direct write targets a concept whose type is not in `direct.types`, or an id under a reserved directory (meta/, proposals/, drafts/, index/, protocols/)",
+        "way_out": "file a proposal instead (okfy propose / okfy_propose); MCP okfy_write does this by itself",
+    },
+    "E_DIRECT_TARGET": {
+        "kind": "error",
+        "summary": "a direct write names a concept id that does not exist (or is not the concept's own id), or sends a patch together with expect_sha256=absent",
+        "way_out": "check the id; pass expect_sha256=absent with content to create a concept",
+    },
+    "E_DIRECT_RETYPE": {
+        "kind": "error",
+        "summary": "a direct write would change the concept's `type`, moving it across the review boundary",
+        "way_out": "keep the type, or file a proposal instead",
+    },
+    "E_DIRECT_OWNER_FIELD": {
+        "kind": "error",
+        "summary": "a direct write sets or changes a field an owner decision writes: verified, generated, supersedes, superseded_by, stale, stale_reason, stale_since",
+        "way_out": "leave the field exactly as the concept has it, or file a proposal instead",
+    },
+    "E_DIRECT_INVALID": {
+        "kind": "error",
+        "summary": "a direct write's resulting concept fails the archetype schema `okfy review accept` applies (the message lists each E_REQUIRED_FIELD / E_REQUIRED_SECTION / ... finding)",
+        "way_out": "fix the concept and write again, or file a proposal instead",
+    },
+    "E_WRITE_CONTENT": {
+        "kind": "error",
+        "summary": "a direct write (core write_direct, MCP okfy_write) was given both content and patch, or neither",
+        "way_out": "pass exactly one: content (the whole concept) or patch (hunks against its current body)",
+    },
+    "E_WRITE_BASE_MOVED": {
+        "kind": "error",
+        "summary": "the concept file is not at the sha256 the write was made against (`--expect` / expect_sha256): it changed, was created, or was deleted since the author read it; MCP okfy_write also returns `current_sha256`",
+        "way_out": "read the concept again and write against the sha256 that read returns",
+    },
+    "E_WRITE_WORKSPACE": {
+        "kind": "error",
+        "summary": "MCP okfy_write was called against a workspace target — a write targets a single member bundle",
+        "way_out": "point the server at the target member bundle's own path, not the workspace",
     },
     "W_CATEGORY_SHAPE": {
         "kind": "warning",

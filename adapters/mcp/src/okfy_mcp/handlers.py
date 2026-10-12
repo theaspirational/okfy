@@ -1,5 +1,6 @@
 """Pure MCP tool handlers: import okfy core in-process, return JSON-able dicts.
 No MCP types here — server.py owns the protocol surface, this owns the logic."""
+import functools
 import hashlib
 import inspect
 import re
@@ -7,6 +8,7 @@ from urllib.parse import unquote
 
 from okfy import federate, frontmatter, proposals, query as q
 from okfy.codes import CODES
+from okfy.commands.common import _archetype_for
 from okfy.index import load_index
 from okfy.package import GENERATED_MARKER
 from okfy_mcp import render
@@ -40,6 +42,7 @@ E_OVERVIEW_TYPE_WORKSPACE = "E_OVERVIEW_TYPE_WORKSPACE"
 E_PROPOSE_WORKSPACE = "E_PROPOSE_WORKSPACE"
 E_PROPOSAL_PATCH_CONTENT = "E_PROPOSAL_PATCH_CONTENT"
 E_FRESH_WORKSPACE = "E_FRESH_WORKSPACE"
+E_WRITE_WORKSPACE = "E_WRITE_WORKSPACE"
 
 # v0.27 (A9 follow-up): a refusal reaches a handler's caller ONE OF TWO WAYS
 # — it RAISES (a ValueError/KeyError propagating out of a handler function),
@@ -133,6 +136,16 @@ def _coded_envelope(msg: str) -> dict | None:
         return None
     return {"error": m.group(1), "message": msg,
            "way_out": msg.rsplit(" — ", 1)[1] if " — " in msg else ""}
+
+
+def _refusal_envelope(e: ValueError) -> dict | None:
+    """`_coded_envelope` of a raised refusal, plus the one piece of DATA a
+    refusal carries besides its text: `current_sha256` on E_WRITE_BASE_MOVED,
+    so the caller knows which bytes it has not seen without parsing prose."""
+    env = _coded_envelope(str(e))
+    if env is not None and isinstance(e, proposals.WriteBaseMoved):
+        env["current_sha256"] = e.current_sha256
+    return env
 
 
 def safe_call(fn, *args, **kwargs) -> dict:
@@ -632,7 +645,8 @@ def h_propose(t: Target, target: str, action: str, note: str,
               new_id: str | None = None, supersedes: str | None = None,
               reverts: str | None = None, flag_type: str | None = None,
               query: str | None = None, patch: list[dict] | None = None,
-              session: Session | None = None) -> dict:
+              session: Session | None = None,
+              expect_sha256: str | None = None) -> dict:
     """File a proposal. A refusal the core names with a code comes back as data
     — `{error, message, way_out}` — so an agent can act on it instead of reading
     a traceback; `persisted: true` appears ONLY when a proposal file was written,
@@ -651,7 +665,10 @@ def h_propose(t: Target, target: str, action: str, note: str,
     only) is `[{old, new, count=1}]` applied to the target's current body
     instead of `content`. A `create` success also carries `nearest` (top-3
     BM25 hits for the proposal's own text, computed fresh — never a refusal)
-    and, when non-empty, `nearest_guidance`."""
+    and, when non-empty, `nearest_guidance`.
+    `expect_sha256` is not an MCP parameter of okfy_propose: `h_write` passes
+    it when a write falls back to a proposal, and the proposal is then filed
+    only if the target is still at that sha256 (`E_WRITE_BASE_MOVED`)."""
     if t.is_workspace:
         return {"error": E_PROPOSE_WORKSPACE,
                 "message": f"{E_PROPOSE_WORKSPACE}: propose targets a "
@@ -718,16 +735,18 @@ def h_propose(t: Target, target: str, action: str, note: str,
     # field to whatever the agent wants.
     effective_target = extends if extends is not None else target
     observed = session.observed(effective_target) if session is not None else None
+    file_it = proposals.propose if expect_sha256 is None else functools.partial(
+        proposals.propose_checked, expect_sha256=expect_sha256)
     try:
-        path = proposals.propose(t.bundle, meta, body, target=target,
-                                 action=action, note=note, actor=actor,
-                                 evidence=evidence, extends=extends, reopen=reopen,
-                                 distinct_from=distinct_from, new_id=new_id,
-                                 supersedes=supersedes, reverts=reverts,
-                                 flag_type=flag_type, query=query, patch=patch,
-                                 observed=observed)
+        path = file_it(t.bundle, meta, body, target=target,
+                       action=action, note=note, actor=actor,
+                       evidence=evidence, extends=extends, reopen=reopen,
+                       distinct_from=distinct_from, new_id=new_id,
+                       supersedes=supersedes, reverts=reverts,
+                       flag_type=flag_type, query=query, patch=patch,
+                       observed=observed)
     except ValueError as e:
-        env = _coded_envelope(str(e))
+        env = _refusal_envelope(e)
         if env is None:
             raise
         return env
@@ -765,6 +784,59 @@ def h_propose(t: Target, target: str, action: str, note: str,
             out["nearest_guidance"] = ("if one of these is the same thing, "
                                        "re-file with extends=<id>")
     return out
+
+
+def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
+            content: str | None = None, patch: list[dict] | None = None,
+            note: str = "", evidence: dict | None = None,
+            session: Session | None = None) -> dict:
+    """Write a concept against the sha256 the agent read. The bundle's
+    `direct.types` decides where it goes, not the agent: a type in the direct
+    lane lands at once (`channel: "direct"`, with the new file's `sha256`);
+    anything else — and any bundle with no lane at all — is filed as a
+    proposal through `h_propose` (`channel: "proposal"`), against the same
+    `expect_sha256`. `persisted: true` either way; `channel` says whether the
+    text is live or waiting for the owner.
+
+    Every other refusal comes back as `{error, message, way_out}` and nothing
+    is written; `E_WRITE_BASE_MOVED` also carries `current_sha256`.
+    `evidence` is used only by the proposal fallback (default
+    `agent-inference`). The ledger row of a direct write records, from this
+    process's own session trace, whether the concept was shown here
+    (`target_shown`) and at this very sha256 (`base_shown`)."""
+    if t.is_workspace:
+        return {"error": E_WRITE_WORKSPACE,
+                "message": f"{E_WRITE_WORKSPACE}: write targets a single "
+                          "member bundle; point the server at that bundle's "
+                          "path, not the workspace",
+                "way_out": "point the server at the target member bundle's "
+                          "own path, not the workspace"}
+    create = expect_sha256 == proposals.ABSENT
+    observed = None
+    if session is not None:
+        observed = session.observed(concept_id)
+        observed["base_shown"] = None if create else (
+            {"id": concept_id, "sha256": expect_sha256} in observed["read_set"])
+    try:
+        out = proposals.write_direct(
+            t.bundle, concept_id, actor=actor, expect_sha256=expect_sha256,
+            text=content or None, patch=patch, note=note, observed=observed,
+            archetype=_archetype_for(t.bundle))
+    except ValueError as e:
+        env = _refusal_envelope(e)
+        if env is None:
+            raise
+        if env["error"] not in (proposals.E_DIRECT_LANE, proposals.E_DIRECT_DISABLED):
+            return env
+        out = h_propose(t, target=concept_id,
+                        action="create" if create else "update", note=note,
+                        content=content, actor=actor,
+                        evidence=evidence or {"kind": "agent-inference"},
+                        patch=patch, session=session, expect_sha256=expect_sha256)
+        if "error" not in out:
+            out["channel"] = "proposal"
+        return out
+    return {"proposal": None, "path": f"{concept_id}.md", **out}
 
 
 def h_fresh(t: Target, ids: dict) -> dict:

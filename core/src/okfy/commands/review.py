@@ -6,7 +6,7 @@ from okfy.bundle import Bundle
 from okfy.proposals import (accept, dismiss, distinct_overlap_warnings,
                             evidence_state, list_proposals, near_warning,
                             nearest, propose, propose_batch, refine, reject,
-                            show_proposal)
+                            show_proposal, write_direct)
 
 from .common import _archetype_for, _print
 
@@ -177,6 +177,17 @@ def cmd_refine(a) -> int:
     refine(b, a.concept_id, a.from_file.read_text(encoding="utf-8"),
            message=a.message)
     _print({"refined": a.concept_id})
+    return 0
+
+
+def cmd_write(a) -> int:
+    b = Bundle(a.bundle)
+    _print(write_direct(
+        b, a.concept_id, actor=a.actor, expect_sha256=a.expect, note=a.note,
+        text=a.from_file.read_text(encoding="utf-8") if a.from_file else None,
+        patch=json.loads(a.patch_file.read_text(encoding="utf-8"))
+        if a.patch_file else None,
+        archetype=_archetype_for(b)))
     return 0
 
 

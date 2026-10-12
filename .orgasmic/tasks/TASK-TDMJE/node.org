@@ -2,7 +2,7 @@
 #+title: orgasmic task TASK-TDMJE
 #+orgasmic_version: 2
 
-* IN_REVIEW TASK-TDMJE Direct-write lane: types the owner opens are written without review
+* IN_PROGRESS TASK-TDMJE Direct-write lane: types the owner opens are written without review
 :PROPERTIES:
 :UID: 708fd15d-fe20-5840-bd0f-2a447b6e5112
 :ID: TASK-TDMJE

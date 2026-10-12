@@ -30,3 +30,18 @@
 :RUN_ID: run-01M4S23JWTJH5MRCXZ57FB78ME
 :EVENT_ID: 902c1034-af42-4f31-8077-59b23444a791
 :END:
+
+* tx-20261012-okfy-92fc3200-8d3b-407b-9456-7a7939829115 conversation.run_released
+:PROPERTIES:
+:TX_ID:   tx-20261012-okfy-92fc3200-8d3b-407b-9456-7a7939829115
+:TIME:    [2026-10-12 Mon 22:02:39]
+:TYPE:    conversation.run_released
+:ACTOR:   aspirational
+:MACHINE: 08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT: okfy
+:TARGET: ~/.orgasmic/ledgers/okfy/.orgasmic/conversations/CONV-JYDMC/node.org
+:REASON: turn_ended_without_finalize: eusing `accept`: **right**, provided all standing-owner-decision readers are adapted. `_pro
+:NODE_ID: CONV-JYDMC
+:RUN_ID: run-01M4S23JWTJH5MRCXZ57FB78ME
+:EVENT_ID: 132d5f14-7104-4606-897e-057500a08bc5
+:END:

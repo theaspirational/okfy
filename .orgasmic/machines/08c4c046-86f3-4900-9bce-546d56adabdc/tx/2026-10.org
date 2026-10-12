@@ -73,3 +73,22 @@
 :EFFORT_OVERRIDE: high
 :EVENT_ID:     15abdd22-dec8-4841-b175-bbc171a9cd81
 :END:
+
+
+* TX 2026-10-12 Mon 22:02:39 manager.dispatch_orphaned TASK-TDMJE
+:PROPERTIES:
+:TX_ID:        tx-20261012-okfy-e3bce208-a69c-47d0-85c3-d5f08ecb59e2
+:TIME:         [2026-10-12 Mon 22:02:39]
+:TYPE:         manager.dispatch_orphaned
+:ACTOR:        aspirational
+:MACHINE:      08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT:      okfy
+:TASK:         TASK-TDMJE
+:TARGET:       ledgers/okfy/.orgasmic/tmp/sessions/dispatch-TASK-TDMJE-reviewer-20261012T220038-run-01M4S23JWTJH5MRCXZ57FB78ME.jsonl
+:REASON:       worker never called `orgasmic dispatch finalize` before the run was released
+:RUN_ID:       run-01M4S23JWTJH5MRCXZ57FB78ME
+:WORKTREE:     ~/.orgasmic/worktrees/okfy/task-tdmje-review
+:RELEASE_REASON: turn_ended_without_finalize: eusing `accept`: **right**, provided all standing-owner-decision readers are adapted. `_protected`, accepted counts and delete tombstones remain sensible; `_dismiss` was missed. - Owner-field protection: **maintainer’s call**, sensible safeguard. - Extra refusal codes: **right**; registrations inspected. No HIGH finding identified. No commands executed beyond read-only inspection. Tests omit dismiss-after-direct, verified full-text fallback, disappeared targets and malformed-archetype envelopes.
+:EXIT_REASON:  unknown
+:EVENT_ID:     f19720ed-8e82-4327-890b-e704865f17a0
+:END:

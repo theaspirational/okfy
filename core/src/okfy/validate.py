@@ -318,6 +318,7 @@ def validate_integrity(bundle: Bundle, archetype=None, strict_sources=False,
             continue  # layer 1's problem
     _check_meta(bundle, r)
     _check_write_policy(bundle, r)
+    _check_direct(bundle, archetype, r, strict=strict_schema)
     _check_acceptance(bundle, r)
     _check_adversarial(bundle, concepts, r)
     _check_types(bundle, concepts, archetype, r, strict=strict_schema)
@@ -530,6 +531,87 @@ def _check_write_policy(bundle: Bundle, r: Report):
               "the gate without disabling the claim")
 
 
+# The `direct` block of meta/purpose.md: concept types an agent may write
+# without review while everything else stays behind `write_policy: proposals`.
+# Closed for the reason `acceptance` is: a misspelled key is a lane that
+# silently never opens, or one the owner believes is narrower than it is.
+DIRECT_KEYS = ("types",)
+
+
+def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str, str]]]:
+    """`(types, problems)` for a purpose's `direct` block — the ONE reader of
+    it, shared by `okfy validate` (`_check_direct`) and the writer
+    (`proposals.write_direct`), so the two cannot disagree about which types
+    the lane covers.
+
+    `types` is None when the block is absent or its `types` is malformed;
+    `problems` is `[(code, message)]`, each message ending in its way out. A
+    writer refuses on ANY problem: a trust boundary that is half-declared is
+    not open."""
+    direct = purpose_meta.get("direct")
+    if direct is None:
+        return None, []
+    problems = []
+    policy = purpose_meta.get("write_policy")
+    if str(policy) != "proposals":
+        problems.append((
+            "E_DIRECT_POLICY",
+            f"`direct` is an exception list for write_policy: proposals, but "
+            f"write_policy is {policy!r}, so the block does nothing — remove "
+            "`direct`, or set write_policy: proposals"))
+    if not isinstance(direct, dict):
+        problems.append((
+            "E_DIRECT_KEY",
+            f"direct must be a mapping, got {type(direct).__name__} — write "
+            "it as `direct: {types: [<type>, ...]}`"))
+        return None, problems
+    unknown = sorted(str(k) for k in direct if k not in DIRECT_KEYS)
+    if unknown:
+        problems.append((
+            "E_DIRECT_KEY",
+            f"unknown direct key(s) {unknown} (known: {list(DIRECT_KEYS)}) — "
+            "remove them; an unrecognised key is a policy that silently does "
+            "nothing"))
+    types = direct.get("types")
+    if (not isinstance(types, list) or not types
+            or any(not isinstance(t, str) or not t.strip() for t in types)):
+        problems.append((
+            "E_DIRECT_TYPE",
+            f"direct.types must be a non-empty list of type names, got "
+            f"{types!r} — list the concept types agents may write without "
+            "review, or remove `direct`"))
+        return None, problems
+    return list(types), problems
+
+
+def _check_direct(bundle: Bundle, archetype, r: Report, strict: bool = False):
+    """The `direct` block is a trust boundary like `write_policy`, so its
+    shape is an error at every strictness level. Whether each listed type is
+    a DECLARED type follows `_check_types` exactly (same authority, same
+    levels): a lane for a type no concept can legally have never opens, and
+    the owner should hear that from validate, not find it in the review
+    queue."""
+    p = bundle.get("meta/purpose")
+    if p is None:
+        return                                   # _check_meta already reported it
+    types, problems = direct_policy(p.meta)
+    for code, message in problems:
+        r.add("error", code, p.id, message)
+    if not types or archetype is None:
+        return
+    allowed, source, declared = _declared_types(bundle, archetype)
+    if not allowed:
+        return
+    level, code = (("error", "E_DIRECT_TYPE") if declared or strict
+                   else ("warning", "W_DIRECT_TYPE"))
+    for t in types:
+        if t not in allowed:
+            r.add(level, code, p.id,
+                  f"direct.types entry {t!r} is not in {source}, so no concept "
+                  "can have it and the lane never opens for it — fix the "
+                  "name, or declare the type in meta/extraction-plan.md `types`")
+
+
 def _check_acceptance(bundle: Bundle, r: Report):
     """`acceptance` is the bundle's own release policy, so it is validated like
     one: closed key set, declared types, and `min_owner_pass` inside the range
@@ -624,6 +706,25 @@ def _check_adversarial(bundle: Bundle, concepts, r: Report):
             r.add("error", code, p.id, f"adversarial_queries[{i}]: {msg}")
 
 
+def _declared_types(bundle: Bundle, archetype) -> tuple[set, str, bool]:
+    """`(allowed, source, declared)`: the set of legal concept types, where it
+    comes from, and whether the bundle DECLARED it (plan `types`) rather than
+    inheriting the archetype's canonical list. One answer for `_check_types`
+    and `_check_direct`."""
+    plan = bundle.plan()
+    declared = (plan.meta.get("types") if plan else None)
+    # `/okfy:new` writes `types` as a mapping of name -> extraction rule, which
+    # is what every real bundle carries; a bare list is accepted too. Reading
+    # only one of the two shapes would silently fall through to canonical_types
+    # and ignore the declaration — the same fail-open this check exists to close.
+    allowed = ({str(t) for t in declared}
+               if isinstance(declared, (dict, list)) else None)
+    if allowed:
+        return allowed, "meta/extraction-plan.md `types`", True
+    return (set(archetype.canonical_types or []),
+            f"archetype {archetype.name} canonical_types", False)
+
+
 def _check_types(bundle: Bundle, concepts, archetype, r: Report,
                  strict: bool = False):
     """Every concept type must be a declared type.
@@ -635,20 +736,10 @@ def _check_types(bundle: Bundle, concepts, archetype, r: Report,
     validated clean, contributed no required fields, and required no sections."""
     if archetype is None:
         return
-    plan = bundle.plan()
-    declared = (plan.meta.get("types") if plan else None)
-    # `/okfy:new` writes `types` as a mapping of name -> extraction rule, which
-    # is what every real bundle carries; a bare list is accepted too. Reading
-    # only one of the two shapes would silently fall through to canonical_types
-    # and ignore the declaration — the same fail-open this check exists to close.
-    allowed = ({str(t) for t in declared}
-               if isinstance(declared, (dict, list)) else None)
-    if allowed:
-        source = "meta/extraction-plan.md `types`"
+    allowed, source, declared = _declared_types(bundle, archetype)
+    if declared:
         level, code = "error", "E_UNKNOWN_TYPE"   # an explicit set is a contract
     else:
-        allowed = set(archetype.canonical_types or [])
-        source = f"archetype {archetype.name} canonical_types"
         # No declaration means the adaptation was never recorded. That is worth
         # an error only where the bundle claims to be releasable.
         level, code = ("error", "E_UNDECLARED_TYPE") if strict else \

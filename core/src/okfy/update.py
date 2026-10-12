@@ -326,11 +326,15 @@ def unresolved_rejections(bundle: Bundle, affected) -> dict[str, dict]:
     tell" — only a positively read `reject` row, as the latest thing on
     record for that target, blocks anything here. A target absent from the
     readable ledger entirely is not reported either — absence of evidence
-    is not evidence of an unresolved rejection."""
+    is not evidence of an unresolved rejection.
+
+    An agent's direct write (`origin: agent-direct`) is skipped: it is an
+    `accept` row by shape, but no owner decided anything, so it cannot be
+    what disposes of an owner's rejection."""
     latest: dict[str, dict] = {}
     for row in memory.events(bundle)[0]:
         target = row.get("target")
-        if target in affected:
+        if target in affected and row.get("origin") != "agent-direct":
             latest[target] = row
     return {cid: row for cid, row in latest.items() if row["event"] == "reject"}
 

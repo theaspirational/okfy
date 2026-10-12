@@ -22,6 +22,116 @@ their history is not something this file can verify.
   `okfy_propose(action="gap", query=<the user's words>)`. Until now the gap
   door was one phrase inside okfy_propose's description.
 
+## Unreleased — the direct-write lane
+
+Until now an agent had one way to write: file a proposal and wait for the owner.
+That is right for knowledge and wrong for session notes, observations and logs,
+where several agents working at once need to see each other's writes now. This
+adds a second lane the owner opens per concept type. Nothing changes for a bundle
+that does not open it, and no version is bumped here: the number is the
+maintainer's.
+
+### Stricter behaviour — read this before upgrading
+
+- **`direct` in `meta/purpose.md` is now a checked key.** A bundle that already
+  carried a `direct:` key of its own fails `okfy validate`: `E_DIRECT_KEY` (not a
+  mapping, or a key other than `types`), `E_DIRECT_TYPE` (`types` is not a
+  non-empty list of names, or names a type outside the plan's declared `types`)
+  and `E_DIRECT_POLICY` (declared while `write_policy` is not `proposals`, where
+  the block would silently do nothing). All three are errors at every strictness
+  level, like `E_WRITE_POLICY`: it is a trust boundary. A listed type outside the
+  archetype's canonical list, in a bundle that declares no `types`, is
+  `W_DIRECT_TYPE` and becomes `E_DIRECT_TYPE` under `--strict-schema`.
+- **"An MCP tool call can never touch a final concept" is now true per bundle, not
+  per adapter.** It holds exactly as before for every bundle without a `direct`
+  block, and for `okfy_propose` always. A bundle that lists `direct.types` has
+  chosen otherwise for those types.
+
+### The lane
+
+- `meta/purpose.md`, under `write_policy: proposals`, may declare
+  `direct: {types: [note, session-log]}`. `write_policy` keeps its two literals and
+  the pre-commit hook is unchanged: a direct write commits through the same
+  `_commit` every sanctioned writer uses.
+- `okfy.proposals.write_direct(bundle, concept_id, *, actor, expect_sha256,
+  text=None, patch=None, note="", observed=None, archetype=None)` writes a
+  concept whose type is listed, at once. The lane is decided by the concept's
+  current type on an update and by the proposed type on a create; `meta/` and the
+  other reserved directories are never in it, so the policy cannot rewrite itself.
+- Concurrency is optimistic and adds no lock. `expect_sha256` is the sha256 of the
+  file the author read (the digest `okfy_show` already returns), or `absent` to
+  create. The check and the write are one step under the existing `review_lock`;
+  the file is read once and the digest and the text both come from that read; the
+  write is a temp file and a rename. Two writers holding the same sha256: one
+  lands, the other is refused `E_WRITE_BASE_MOVED` with the current sha256. A hand
+  edit takes no lock: one made before that read is refused the same way, one made
+  between the read and the rename is lost. That window is the honest limit of
+  compare-then-rename.
+- What a proposal would be refused for is refused here, by the same functions: the
+  injection and secret scans (now `_refuse_scan`, shared with the propose gate),
+  `sources:` outside the corpus, and the archetype schema `review accept` applies
+  (`E_DIRECT_INVALID`). The rejected-content and duplicate-title gates belong to
+  the review queue and do not run.
+- A direct write cannot change `type` (`E_DIRECT_RETYPE`) or what an owner decision
+  wrote: `verified`, `generated`, `stale`/`stale_reason`/`stale_since`,
+  `supersedes`/`superseded_by` (`E_DIRECT_OWNER_FIELD`). They are carried over from
+  the file. A concept edited this way after a verification warns
+  `W_VERIFIED_SUPERSEDED`, as after a `refine`.
+- The ledger row is an `accept` with `proposal: null`, `origin: agent-direct`, the
+  agent as actor and `base_sha256`. Readers of `accept` rows see it as a content
+  write: `release-check` counts it among the changes since the last package and
+  `okfy diff` lists the concept as protected. `okfy.update.unresolved_rejections`
+  skips it, because an agent's write is not the owner disposing of a rejection.
+- `okfy write <bundle> <concept_id> --as <actor> --expect <sha256|absent>
+  (--from <file> | --patch-file <hunks.json>) [--note …]` is the CLI door. It
+  refuses; it does not fall back.
+
+### MCP
+
+- `okfy_write(concept_id, actor, expect_sha256, content?, patch?, note?,
+  evidence?)`. The agent does not need to know the policy: a listed type is written
+  at once (`channel: "direct"`, with the new file's `sha256`); any other type, and
+  any bundle with no lane, is filed through the `okfy_propose` path
+  (`channel: "proposal"`) and only if the target is still at `expect_sha256`
+  (`okfy.proposals.propose_checked`: check and filing under one lock).
+  `persisted: true` in both cases. A refusal is `{error, message, way_out}`;
+  `E_WRITE_BASE_MOVED` also carries `current_sha256`.
+- A direct write's ledger row keeps four counters from the server's own session
+  trace: `by`, `queries`, `target_shown` and `base_shown`, the last being whether
+  this session was shown the concept at the very sha256 it wrote against. An agent
+  that takes `current_sha256` from a refusal and writes without reading is
+  therefore visible in the ledger. It is not prevented: like every actor string
+  here, this is a record, not authentication.
+- `okfy_show`'s docstring points at `okfy_write`. No existing response shape
+  changed.
+
+### New codes
+
+`E_DIRECT_POLICY`, `E_DIRECT_KEY`, `E_DIRECT_TYPE`, `W_DIRECT_TYPE`,
+`E_DIRECT_DISABLED`, `E_DIRECT_LANE`, `E_DIRECT_TARGET`, `E_DIRECT_RETYPE`,
+`E_DIRECT_OWNER_FIELD`, `E_DIRECT_INVALID`, `E_WRITE_CONTENT`,
+`E_WRITE_BASE_MOVED`, `E_WRITE_WORKSPACE`. Reused with their meaning unchanged:
+`E_PROPOSAL_ACTOR`, `E_PROPOSAL_INJECTION`, `E_PROPOSAL_SECRET`,
+`E_PROPOSAL_SOURCE`, `E_PROPOSAL_TRUNCATED`, `E_FRONTMATTER`, `E_PATCH_SHAPE`,
+`E_PATCH_COUNT`, `E_RESERVED_DIR`.
+
+### Not changed, and not claimed
+
+- `okfy refine` still writes whatever parses and has a `type`: no injection or
+  secret scan, no archetype check, no lock, no base check, a plain `write_text`.
+  It is the owner's door and was left alone; the direct lane does not go through
+  it and does not inherit any of that.
+- The packaged `AGENTS.md` memory block and `protocols/memory.md` do not mention
+  the lane. An MCP agent learns it from the tool description; an agent that only
+  reads files is still told to propose.
+- One commit per direct write. A write touching several concepts at once is still
+  a set of proposals.
+- A concept created directly is found by `okfy query` at once and is not in
+  `index.md` until the next `okfy package`, exactly like an accepted create.
+- This adds `core/tests/test_direct_write.py` and
+  `adapters/mcp/tests/test_write_tool.py`. The public export ships no tests by
+  policy, so CI's conditional unit step now runs these two files and nothing else.
+
 ## v0.29.0 — 2026-09-30
 
 An audit of v0.28 found two gaps in the shipped tool and four in a local experiment

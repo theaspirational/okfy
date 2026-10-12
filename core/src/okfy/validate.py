@@ -548,9 +548,9 @@ def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str,
     `problems` is `[(code, message)]`, each message ending in its way out. A
     writer refuses on ANY problem: a trust boundary that is half-declared is
     not open."""
-    direct = purpose_meta.get("direct")
-    if direct is None:
+    if "direct" not in purpose_meta:
         return None, []
+    direct = purpose_meta["direct"]
     problems = []
     policy = purpose_meta.get("write_policy")
     if str(policy) != "proposals":

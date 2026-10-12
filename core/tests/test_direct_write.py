@@ -175,8 +175,15 @@ def test_bundle_without_direct_block_is_disabled(bundle):
     ({"write_policy": "direct"}, "E_DIRECT_POLICY"),
     ({"direct": {"types": ["note"], "foo": 1}}, "E_DIRECT_KEY"),
     ({"direct": {"types": []}}, "E_DIRECT_TYPE"),
+    ({"direct": "null"}, "E_DIRECT_KEY"),
 ])
 def test_a_malformed_policy_opens_nothing(bundle, purpose, code):
+    if purpose.get("direct") == "null":     # an explicit YAML null, not absence
+        path = bundle.root / "meta/purpose.md"
+        path.write_text(path.read_text(encoding="utf-8").replace(
+            "direct:\n  types:\n  - note\n", "direct:\n"), encoding="utf-8")
+        assert frontmatter.parse(path.read_text(encoding="utf-8"))[0]["direct"] is None
+        purpose = {}
     _set_purpose(bundle.root, **purpose)
     refused(bundle, code, "notes/a", expect_sha256=sha(bundle, "notes/a"),
             text=NOTE_A)
@@ -190,8 +197,11 @@ def test_create(bundle):
             text=DECISION)
     refused(bundle, "E_DIRECT_TARGET", "notes/b", expect_sha256="absent",
             patch=[{"old": "a", "new": "b"}])
-    refused(bundle, "E_DIRECT_TARGET", "notes/missing", expect_sha256="1" * 64,
-            text=NOTE_A)
+    e = refused(bundle, "E_WRITE_BASE_MOVED", "notes/missing",
+                expect_sha256="1" * 64, text=NOTE_A)
+    assert e.current_sha256 == "absent"
+    refused(bundle, "E_DIRECT_TARGET", "notes/../notes/a",
+            expect_sha256=sha(bundle, "notes/a"), text=NOTE_A)
     out = proposals.write_direct(bundle, "notes/b", actor=ACTOR,
                                  expect_sha256="absent",
                                  text=NOTE_A.replace("note A", "note B"))
@@ -199,6 +209,14 @@ def test_create(bundle):
     assert out["action"] == "create" and out["sha256"] == sha(bundle, "notes/b")
     assert created.meta["generated"]["by"] == ACTOR
     assert memory.events(bundle)[0][-1]["action"] == "create"
+
+
+def test_a_target_deleted_after_it_was_read_is_base_moved(bundle):
+    expect = sha(bundle, "notes/a")
+    (bundle.root / "notes/a.md").unlink()
+    e = refused(bundle, "E_WRITE_BASE_MOVED", "notes/a", expect_sha256=expect,
+                text=with_body(NOTE_A, "\nresurrected\n"))
+    assert e.current_sha256 == "absent"
 
 
 # 6
@@ -391,6 +409,21 @@ def test_a_direct_write_does_not_dispose_of_an_owners_rejection(bundle):
                            expect_sha256=sha(bundle, "notes/a"),
                            text=with_body(NOTE_A, "\nOther text.\n"))
     assert set(unresolved_rejections(bundle, {"notes/a"})) == {"notes/a"}
+    # ...and it must not stop the owner disposing of it either: the two
+    # readers of "does a rejection still stand" share one fold.
+    proposals.dismiss(bundle, "notes/a", "the source change needs no action")
+    assert unresolved_rejections(bundle, {"notes/a"}) == {}
+
+
+def test_a_lazy_archetype_is_loaded_only_when_the_schema_check_is_reached(bundle):
+    def never():
+        raise AssertionError("the archetype was loaded for a write that was routed away")
+    refused(bundle, "E_DIRECT_LANE", "decisions/d1", archetype=never,
+            expect_sha256=sha(bundle, "decisions/d1"), text=DECISION)
+    refused(bundle, "E_DIRECT_INVALID", "notes/a",
+            archetype=lambda: load_archetype("decision-support"),
+            expect_sha256=sha(bundle, "notes/a"),
+            text=NOTE_A.replace("description: What the agent saw in session A.\n", ""))
 
 
 def test_cli_write(bundle, tmp_path, capsys):

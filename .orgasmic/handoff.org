@@ -1,0 +1,26 @@
+#+title: okfy manager handoff
+#+orgasmic_version: 2
+#+scope: project
+#+plugin: handoff schema=1
+
+* HANDOFF current :handoff:
+:PROPERTIES:
+:ID:               handoff-current
+:LIVENESS:
+:LIVENESS_AT:
+:UPDATED_AT:
+:END:
+
+** Done so far
+- Scaffold created. Bootstrap has not started yet.
+
+** Next likely actions
+- Audit the repository, ask the operator for missing facts, and replace the
+  placeholders in `project.org` with confirmed project facts.
+
+** In flight
+- None.
+
+** Divergence / Risks
+- Bootstrap has not started yet; `.orgasmic/` still contains scaffold
+  placeholders.

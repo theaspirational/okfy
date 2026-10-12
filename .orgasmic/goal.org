@@ -1,0 +1,18 @@
+#+title: okfy active goal
+#+orgasmic_version: 2
+#+scope: project
+#+plugin: goal schema=1
+
+* GOAL Bootstrap project state :goal:
+:PROPERTIES:
+:ID:               goal-current
+:END:
+
+** Statement
+Bootstrap this repository's `.orgasmic/` state from real code and operator
+answers before filing project work.
+
+** Reached When
+- [ ] `project.org` contains repo-specific facts instead of placeholders.
+- [ ] Durable decisions and glossary terms are filed through the CLI when found.
+- [ ] At least one bootstrap activity record exists under `tx/`.

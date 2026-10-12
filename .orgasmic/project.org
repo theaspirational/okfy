@@ -1,0 +1,14 @@
+#+title: okfy
+#+orgasmic_version: 2
+
+* PROJECT okfy
+:PROPERTIES:
+:PROJECT_UID:         f5351168-17ff-4c05-b8dc-3f2827a22699
+:ID:                  okfy
+:END:
+
+** Mission
+[Describe the project's goal in 2–4 sentences.]
+
+** Operating Constraints
+[Project-specific constraints injected into every worker prompt.]

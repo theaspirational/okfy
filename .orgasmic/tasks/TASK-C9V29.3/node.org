@@ -1,0 +1,51 @@
+#+title: orgasmic task TASK-C9V29.3
+#+orgasmic_version: 2
+
+* BACKLOG TASK-C9V29.3 migrate-instructions: relocate tacit knowledge into .orgasmic :bootstrap:
+:PROPERTIES:
+:UID:              5cde635b-0f34-5ef1-846f-c3ae5aaa1809
+:ID:               TASK-C9V29.3
+:STATE:            backlog
+:PARENT_TASK:      TASK-C9V29
+:PRIORITY:         P1
+:WRITE_SCOPE:      .orgasmic/project.org .orgasmic/decisions/** .orgasmic/gotchas/** .orgasmic/conventions/** .orgasmic/tmp/local_instructions.org CLAUDE.md AGENTS.md .orgasmic/tx/**
+:READ_SCOPE:       CLAUDE.md AGENTS.md .cursorrules .cursor/** .github/copilot-instructions.md CONTRIBUTING.md docs/** .orgasmic/**
+:DEPENDS_ON:       TASK-C9V29.2
+:BLOCKED_BY:
+:LAST_UPDATED:
+:END:
+
+** Description
+Move tacit knowledge out of pre-existing instruction files so every rule has
+exactly one canonical `.orgasmic/` home. If the repo has no instruction files,
+record a no-op and close.
+
+Audit: pre-existing agent instructions (`CLAUDE.md`, `AGENTS.md`,
+`.cursorrules`, `.github/copilot-instructions.md`) and contributor docs or
+specs (`CONTRIBUTING.md`, `docs/`) for rules an agent is expected to obey.
+
+Grill: for each rule, confirm with the operator that it is still live, then
+route it to its home: working agreements -> `conventions/`; repeated traps ->
+gotcha nodes; choices with rationale -> decision nodes (`orgasmic decision create`); mission or operating
+constraints -> `project.org`; machine-specific setup ->
+`tmp/local_instructions.org` (local, ignored). Drop rules the operator calls
+dead.
+
+Write: with operator approval, shrink each migrated instruction file down to a
+thin pointer — orgasmic is opt-in via the `/orgasmic` skill; never hand-edit
+`.orgasmic/` state; see `.orgasmic/entry.org` — plus whatever the operator
+keeps for human readers. `orgasmic project init` never creates or edits
+`AGENTS.md`/`CLAUDE.md`; offer to create the pointer here if neither file
+exists, and skip if the operator declines. A rule must not survive in two
+homes.
+
+** Acceptance Criteria
+- [ ] Every live rule from pre-existing instruction files has exactly one
+      `.orgasmic/` home — or the Worklog records a no-op because no such
+      files existed.
+- [ ] Machine-specific notes live in `tmp/local_instructions.org`, not in
+      committed files.
+- [ ] Migrated instruction files carry the thin opt-in pointer and no longer
+      restate migrated rules.
+
+** Worklog

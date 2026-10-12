@@ -1,0 +1,32 @@
+#+title: orgasmic journal CONV-JYDMC
+#+orgasmic_version: 2
+
+* tx-20261012-okfy-9a1d6da5-c81c-433c-babf-da685132a50d graph.conversations.created
+:PROPERTIES:
+:TX_ID:   tx-20261012-okfy-9a1d6da5-c81c-433c-babf-da685132a50d
+:TIME:    [2026-10-12 Mon 22:00:38]
+:TYPE:    graph.conversations.created
+:ACTOR:   aspirational
+:MACHINE: 08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT: okfy
+:TARGET: ~/.orgasmic/ledgers/okfy/.orgasmic/conversations/CONV-JYDMC/node.org
+:REASON: created Conversation CONV-JYDMC
+:NODE_ID: CONV-JYDMC
+:EVENT_ID: 6ddc3125-04e2-4204-af82-9e056f55a5c9
+:REQUEST_REPLAY_V1: {"request_id":"129614b1-b065-43ca-84d7-e8bd8febc181","mutation":{"operation":"conversation.created","project_id":"okfy","payload_sha256":"48a450480b4f285281feb830d84b4c4f2c4e9100f9afd456b9b981825fe6b4f8"},"mutation_id":"CONV-JYDMC","written_paths":[{"project":"okfy","relative":".orgasmic/conversations/CONV-JYDMC/node.org"},{"project":"okfy","relative":".orgasmic/conversations/CONV-JYDMC/links.org"},{"project":"okfy","relative":".orgasmic/conversations/CONV-JYDMC/journal.org"}]}
+:END:
+
+* tx-20261012-okfy-4d3d4d54-c45b-4693-b3c5-01a922b01642 conversation.run_started
+:PROPERTIES:
+:TX_ID:   tx-20261012-okfy-4d3d4d54-c45b-4693-b3c5-01a922b01642
+:TIME:    [2026-10-12 Mon 22:00:39]
+:TYPE:    conversation.run_started
+:ACTOR:   aspirational
+:MACHINE: 08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT: okfy
+:TARGET: ~/.orgasmic/ledgers/okfy/.orgasmic/conversations/CONV-JYDMC/node.org
+:REASON: dispatch attempt started
+:NODE_ID: CONV-JYDMC
+:RUN_ID: run-01M4S23JWTJH5MRCXZ57FB78ME
+:EVENT_ID: 902c1034-af42-4f31-8077-59b23444a791
+:END:

@@ -1,4 +1,15 @@
 {
   "version": 1,
-  "plugins": {}
+  "plugins": {
+    "tasks": {
+      "enabled": true,
+      "approved_capabilities": [
+        "core.dispatch",
+        "dispatch",
+        "read",
+        "ui.execute",
+        "write"
+      ]
+    }
+  }
 }

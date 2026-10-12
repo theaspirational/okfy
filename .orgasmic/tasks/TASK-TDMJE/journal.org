@@ -1,0 +1,33 @@
+#+title: orgasmic journal TASK-TDMJE
+#+orgasmic_version: 2
+
+* tx-20261012-okfy-97fe3807-1584-48a4-98b6-bcbe7d5ab4f2 task.created
+:PROPERTIES:
+:TX_ID:   tx-20261012-okfy-97fe3807-1584-48a4-98b6-bcbe7d5ab4f2
+:TIME:    [2026-10-12 Mon 22:00:26]
+:TYPE:    task.created
+:ACTOR:   aspirational
+:MACHINE: 08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT: okfy
+:TASK: TASK-TDMJE
+:TARGET: .orgasmic/tasks/TASK-TDMJE/node.org
+:REASON: Tracks the review of branch feat/direct-write-lane (9618b9b..9421034) before it is offered upstream
+:EVENT_ID: 34b2c0eb-b4db-4c77-b383-05726d7bd4eb
+:REQUEST_REPLAY_V1: {"request_id":"create-b91c1f0ba70e968a587ecff92dde65ae/tx","mutation":{"operation":"task.created","project_id":"okfy","payload_sha256":"d2fd0e472f1805a2b1831424cddcd11f099fd092d32851852aa7179a099a71ef"},"mutation_id":"TASK-TDMJE","written_paths":[{"project":"okfy","relative":".orgasmic/tasks/TASK-TDMJE/node.org"},{"project":"okfy","relative":".orgasmic/tasks/TASK-TDMJE/journal.org"}]}
+:END:
+
+* tx-20261012-okfy-6a6c2a00-3161-4175-b0ab-750e18c46f1e task.state_transitioned
+:PROPERTIES:
+:TX_ID:   tx-20261012-okfy-6a6c2a00-3161-4175-b0ab-750e18c46f1e
+:TIME:    [2026-10-12 Mon 22:00:32]
+:TYPE:    task.state_transitioned
+:ACTOR:   aspirational
+:MACHINE: 08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT: okfy
+:TASK: TASK-TDMJE
+:TARGET: .orgasmic/tasks/TASK-TDMJE/node.org
+:REASON: Implemented outside dispatch; commit 9421034edf597bb29730d297f9a7fb86f3bde357 is ready for review
+:FROM_STATE: backlog
+:TO_STATE: in_review
+:EVENT_ID: bca984c7-3aea-473f-be03-19337a71cc53
+:END:

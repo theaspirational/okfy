@@ -1,0 +1,16 @@
+#+plugin: tasks schema=1
+#+title: orgasmic task TASK-TDMJE
+#+orgasmic_version: 2
+
+* IN_REVIEW TASK-TDMJE Direct-write lane: types the owner opens are written without review
+:PROPERTIES:
+:UID: 708fd15d-fe20-5840-bd0f-2a447b6e5112
+:ID: TASK-TDMJE
+:PRIORITY: P2
+:END:
+
+Branch feat/direct-write-lane, one commit 9421034 on top of upstream main (v0.29.0).
+
+Adds an opt-in lane to OKFy: concept types listed under direct.types in meta/purpose.md are written by an agent without review, checked against the sha256 the agent read. New core function write_direct, CLI command okfy write, MCP tool okfy_write.
+
+Implemented outside orgasmic dispatch. This task exists to carry the review.

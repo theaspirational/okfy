@@ -1,0 +1,23 @@
+#+title: orgasmic Conversation CONV-JYDMC
+#+orgasmic_version: 2
+
+#+todo: OPEN | ARCHIVED
+
+* OPEN Review TASK-TDMJE
+:PROPERTIES:
+:UID: 6d5bfda0-028b-5739-bc37-cd8fd6ecb874
+:ID: CONV-JYDMC
+:PURPOSE: review
+:OWNER: admin
+:PROVIDER: codex
+:MODEL: 
+:EFFORT: 
+:ACCESS: 
+:SERVICE_TIER: 
+:HARNESS_ARGS: 
+:MODE: chat
+:MACHINE: 08c4c046-86f3-4900-9bce-546d56adabdc
+:WORKTREE: ~/.orgasmic/worktrees/okfy/task-tdmje-review
+:RUNS:  run-01M4S23JWTJH5MRCXZ57FB78ME
+:CREATED_AT: 2026-10-12T22:00:38Z
+:END:

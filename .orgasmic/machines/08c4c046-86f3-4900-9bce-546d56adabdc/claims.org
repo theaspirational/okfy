@@ -1,0 +1,19 @@
+#+title: orgasmic tx claims
+#+orgasmic_version: 1
+
+* TX 2026-10-12 Mon 22:00:38.100894 task.claimed TASK-TDMJE
+:PROPERTIES:
+:TX_ID:        tx-20261012220038-606e6df0
+:TIME:         [2026-10-12 Mon 22:00:38.100894]
+:TYPE:         task.claimed
+:ACTOR:        aspirational
+:MACHINE:      08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT:      okfy
+:TASK:         TASK-TDMJE
+:TARGET:       .orgasmic/tasks/TASK-TDMJE
+:RUN_ID:       run-01M4S23JWTJH5MRCXZ57FB78ME
+:REQUEST_ID:   398f21a321b44078a3cf7ec359deb751
+:REQUESTER:    admin
+:REQUEST_IDENTITY: {"branch":"task-tdmje-review","credential_mode":null,"effort":"high","endpoint":"","from":"9421034edf597bb29730d297f9a7fb86f3bde357","governance":null,"harness":"codex","harness_args":null,"kind":"reviewer","mcp_isolation":null,"model":"gpt-6.1-sol","protocol":"app-server","provider":null,"resume_from":null,"simulated":"false","speed":null,"subject":"TASK-TDMJE","transport":"spawn","worktree":"~/.orgasmic/worktrees/okfy/task-tdmje-review"}
+:EVENT_ID:     1afc7647-733c-48a1-8669-4b0afdd3199c
+:END:

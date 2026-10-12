@@ -1,0 +1,75 @@
+#+title: orgasmic tx 2026-10
+#+orgasmic_version: 1
+
+* TX 2026-10-12 Mon 22:00:38 manager.dispatch_started TASK-TDMJE
+:PROPERTIES:
+:TX_ID:        tx-20261012-okfy-aaeb851f-d0d2-4735-af60-3daa300e115e
+:TIME:         [2026-10-12 Mon 22:00:38]
+:TYPE:         manager.dispatch_started
+:ACTOR:        aspirational
+:MACHINE:      08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT:      okfy
+:TASK:         TASK-TDMJE
+:TARGET:       .orgasmic/tmp/sessions/dispatch-TASK-TDMJE-reviewer-20261012T220038-run-01M4S23JWTJH5MRCXZ57FB78ME.jsonl
+:REASON:
+:KIND:         reviewer
+:HARNESS:      codex
+:PROTOCOL:     app-server
+:TRANSPORT:    spawn
+:BRIDGE:       none
+:MULTIPLEXER:  none
+:WORKTREE:     ~/.orgasmic/worktrees/okfy/task-tdmje-review
+:BRANCH:       task-tdmje-review
+:BRIEF_PATH:   .orgasmic/tmp/dispatch/okfy-direct-write-lane-review/okfy-direct-write-lane-review-2282f05aaa7e490196425a0e6d887083-brief.md
+:LAST_PATH:    .orgasmic/tmp/dispatch/okfy-direct-write-lane-review/okfy-direct-write-lane-review-2282f05aaa7e490196425a0e6d887083-last.txt
+:STDOUT_PATH:  .orgasmic/tmp/dispatch/okfy-direct-write-lane-review/okfy-direct-write-lane-review-2282f05aaa7e490196425a0e6d887083-stdout.log
+:DISPATCH_ATTEMPT: 2282f05aaa7e490196425a0e6d887083
+:STARTED_AT:   [2026-10-12 Mon 22:00:38]
+:LIVENESS:     9421034edf597bb29730d297f9a7fb86f3bde357
+:NEXT:         reviewer-watch-then-fix-or-close
+:PREFLIGHT:    ok
+:REQUESTER:    admin
+:CLAIM_RUN:    run-01M4S23JWTJH5MRCXZ57FB78ME
+:REVIEW_TREE:  private
+:MODEL:        gpt-6.1-sol
+:EFFORT:       high
+:REASON_INITIAL: Operator asked for a GPT Sol 6.1 high review of the direct-write lane before it is offered upstream
+:REQUEST_IDENTITY: {"branch":"task-tdmje-review","credential_mode":null,"effort":"high","endpoint":"","from":"9421034edf597bb29730d297f9a7fb86f3bde357","governance":null,"harness":"codex","harness_args":null,"kind":"reviewer","mcp_isolation":null,"model":"gpt-6.1-sol","protocol":"app-server","provider":null,"resume_from":null,"simulated":"false","speed":null,"subject":"TASK-TDMJE","transport":"spawn","worktree":"~/.orgasmic/worktrees/okfy/task-tdmje-review"}
+:MCP_ISOLATION: applied
+:MCP_DISABLED: computer-use mem node_repl playwright svelte syncntn
+:CODEX_BIN:    ~/.local/bin/codex
+:CODEX_VERSION: codex-cli 0.160.0
+:EVENT_ID:     56c12bf1-3c7d-4e2e-9586-ba9e1850c8d7
+:END:
+
+* TX 2026-10-12 Mon 22:00:39 run.created TASK-TDMJE
+:PROPERTIES:
+:TX_ID:        tx-20261012-okfy-56cbb6a3-8bc5-4a7e-af69-252c453d2ea6
+:TIME:         [2026-10-12 Mon 22:00:39]
+:TYPE:         run.created
+:ACTOR:        aspirational
+:MACHINE:      08c4c046-86f3-4900-9bce-546d56adabdc
+:PROJECT:      okfy
+:TASK:         TASK-TDMJE
+:TARGET:       .orgasmic/tmp/sessions/dispatch-TASK-TDMJE-reviewer-20261012T220038-run-01M4S23JWTJH5MRCXZ57FB78ME.jsonl
+:REASON:       Operator asked for a GPT Sol 6.1 high review of the direct-write lane before it is offered upstream
+:RUN_ID:       run-01M4S23JWTJH5MRCXZ57FB78ME
+:ORIGIN:       cli_dispatch
+:WORKER:       reviewer-codex-app-server
+:KIND:         reviewer
+:HARNESS:      codex
+:PROTOCOL:     app-server
+:TRANSPORT:    spawn
+:BRIDGE:       none
+:MULTIPLEXER:  none
+:WORKTREE:     ~/.orgasmic/worktrees/okfy/task-tdmje-review
+:BRIEF_PATH:   .orgasmic/tmp/dispatch/okfy-direct-write-lane-review/okfy-direct-write-lane-review-2282f05aaa7e490196425a0e6d887083-brief.md
+:LAST_PATH:    .orgasmic/tmp/dispatch/okfy-direct-write-lane-review/okfy-direct-write-lane-review-2282f05aaa7e490196425a0e6d887083-last.txt
+:STDOUT_PATH:  .orgasmic/tmp/dispatch/okfy-direct-write-lane-review/okfy-direct-write-lane-review-2282f05aaa7e490196425a0e6d887083-stdout.log
+:DISPATCH_ATTEMPT: 2282f05aaa7e490196425a0e6d887083
+:PID:          51462
+:DISPATCH_TX:  tx-20261012-okfy-aaeb851f-d0d2-4735-af60-3daa300e115e
+:MODEL_OVERRIDE: gpt-6.1-sol
+:EFFORT_OVERRIDE: high
+:EVENT_ID:     15abdd22-dec8-4841-b175-bbc171a9cd81
+:END:

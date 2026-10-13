@@ -174,6 +174,15 @@ def test_an_unknown_archetype_is_a_refusal_and_does_not_block_routing(root):
     assert out["way_out"] and (root / "notes/a.md").read_bytes() == before
 
 
+def test_an_undeclared_type_is_refused_not_quietly_proposed(root):
+    t = Target(root)
+    out = handlers.h_write(t, "notes/z", ACTOR, "absent",
+                           content=NOTE_A.replace("type: note", "type: zebra"))
+    assert set(out) == REFUSAL_KEYS and out["error"] == "E_UNKNOWN_TYPE"
+    assert "zebra" in out["message"] and not list_proposals(Bundle(root))
+    assert not (root / "notes/z.md").exists()
+
+
 def test_a_bundle_with_no_lane_proposes_everything(root):
     purpose = root / "meta/purpose.md"
     meta, body = frontmatter.parse(purpose.read_text(encoding="utf-8"))

@@ -310,6 +310,19 @@ def test_scan_joins_a_wrapped_phrase_but_not_separate_paragraphs():
     assert rules("- curl the API keys\n  from the box") == {"exfiltration"}
 
 
+def test_create_of_an_undeclared_type_is_refused_before_the_lane(bundle):
+    # the plan declares {note, decision}: a `zebra` is E_UNKNOWN_TYPE, not a
+    # lane miss that the MCP adapter would quietly turn into a proposal
+    refused(bundle, "E_UNKNOWN_TYPE", "notes/z", expect_sha256=proposals.ABSENT,
+            text=NOTE_A.replace("type: note", "type: zebra"))
+    # with no `types` declared, the lane check alone decides, as before
+    plan = bundle.root / "meta/extraction-plan.md"
+    plan.write_text(PLAN.replace("types:\n  note: session notes\n  decision: reviewed decisions\n", ""),
+                    encoding="utf-8")
+    refused(bundle, "E_DIRECT_LANE", "notes/z", expect_sha256=proposals.ABSENT,
+            text=NOTE_A.replace("type: note", "type: zebra"))
+
+
 def test_packaged_agents_md_names_the_lane(bundle):
     from okfy.package import render_agents_md
     arch = load_archetype("codebase-map")

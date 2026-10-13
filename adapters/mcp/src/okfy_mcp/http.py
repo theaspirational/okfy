@@ -124,7 +124,8 @@ class OidcVerifier:
     every request later; keys are fetched and cached by `kid` as tokens
     arrive, so a key rotation needs no restart."""
 
-    def __init__(self, issuers: list[str], audiences: list[str]):
+    def __init__(self, issuers: list[str], audiences: list[str],
+                 write_group: str | None = None):
         if not issuers:
             raise ValueError(f"{E_ISSUER}: --oidc-issuer needs at least one "
                              "issuer URL")
@@ -153,6 +154,11 @@ class OidcVerifier:
                                                headers={"User-Agent": "okfy-mcp"})
         self.issuers = list(self._keys)         # as the issuers state them
         self.audiences = list(audiences)
+        # The scope says what the CLIENT may do for the user; the group says
+        # what the USER may do. With a write group, okfy:write counts only
+        # for users the issuer lists in it (`groups` claim), so a guest whose
+        # client asked for every scope still reads only.
+        self.write_group = write_group
 
     def _claims(self, token: str) -> dict:
         iss = str(jwt.decode(token, options={"verify_signature": False}).get("iss") or "")
@@ -172,9 +178,14 @@ class OidcVerifier:
             log.warning("token refused: %s: %s", e.__class__.__name__, e)
             return None
         sub = str(claims["sub"])
+        scopes = str(claims.get("scope") or "").split()
+        if (self.write_group and WRITE_SCOPE in scopes
+                and self.write_group not in (claims.get("groups") or [])):
+            log.info("okfy:write withheld: %r is not in group %r", sub, self.write_group)
+            scopes.remove(WRITE_SCOPE)
         return AccessToken(token=token, client_id=str(claims.get("azp") or sub),
-                           scopes=str(claims.get("scope") or "").split(),
-                           expires_at=int(claims["exp"]), subject=sub, claims=claims)
+                           scopes=scopes, expires_at=int(claims["exp"]), subject=sub,
+                           claims=claims)
 
 
 ACTOR_CLAIM = "okfy_actor"

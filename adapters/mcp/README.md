@@ -26,6 +26,7 @@ uv tool install ./adapters/mcp        # installs the `okfy-mcp` command
 
 ```bash
 okfy-mcp serve  <path>                          # run the stdio MCP server
+okfy-mcp serve  <path> --http --token-file <f>  # serve many clients over HTTP, one bearer token
 okfy-mcp config <path> --client claude-code     # print a client config snippet
 ```
 
@@ -186,4 +187,33 @@ MCP-specific code: `okfy_query` answers across members with constraints pulled i
 and `okfy_show` takes namespaced ids. `okfy_links` and `okfy_propose` target a
 single bundle — point the server at that member bundle's path for those.
 
-Transport is **stdio only** in this cut; SSE/HTTP is deferred.
+## Transports: stdio, or HTTP behind one token
+
+stdio is the default: the client launches one server process per agent
+session, on the same machine. `--http` is the other shape: one long-running
+process on a host, reached by every client that holds the token, each seeing
+the others' writes on its next call.
+
+```bash
+openssl rand -hex 32 > ~/.config/okfy/mcp-token; chmod 600 ~/.config/okfy/mcp-token
+okfy-mcp serve <path> --http --token-file ~/.config/okfy/mcp-token [--host 127.0.0.1] [--port 8765]
+```
+
+The MCP endpoint is `http://HOST:PORT/mcp` (streamable HTTP, stateless, JSON
+responses). Every request must carry `Authorization: Bearer <token>`; anything
+else is answered `401` with the usual `{error: E_MCP_UNAUTHORIZED, message,
+way_out}` envelope before the MCP layer sees it. The token is read from a file
+(or `OKFY_MCP_TOKEN_FILE`), never from a flag, and must be one line of at least
+32 characters; without one the server refuses to start (`E_MCP_HTTP_TOKEN`).
+There is no unauthenticated mode.
+
+What the token is, and is not: one token, one bundle, every holder equal — it
+is the bundle's access control and nothing finer. Users, scopes or per-client
+limits belong in a reverse proxy in front, and so does TLS: this serves plain
+HTTP, so keep `--host` on loopback or a private interface and terminate TLS
+in the proxy. The `observed` block ("this session showed the concept before
+writing it", above) is not recorded over HTTP: one process serves every
+client, so it could not say *whose* read it saw. Several `okfy-mcp` processes
+on one bundle, and several clients on one process, are safe to write
+concurrently: the core's `review_lock` and the `sha256` base check decide, as
+for stdio.

@@ -1390,6 +1390,16 @@ CODES: dict[str, dict] = {
         "summary": "MCP okfy_write was called against a workspace target — a write targets a single member bundle",
         "way_out": "point the server at the target member bundle's own path, not the workspace",
     },
+    "E_MCP_HTTP_TOKEN": {
+        "kind": "error",
+        "summary": "`okfy-mcp serve --http` was started without a usable bearer token: no --token-file (and no OKFY_MCP_TOKEN_FILE), an unreadable file, or a token shorter than 32 characters or containing whitespace; the server refuses to start rather than serve the bundle to anyone who can reach the port",
+        "way_out": "`openssl rand -hex 32 > <file>; chmod 600 <file>` and pass it as --token-file",
+    },
+    "E_MCP_UNAUTHORIZED": {
+        "kind": "error",
+        "summary": "an HTTP request to `okfy-mcp serve --http` carried no `Authorization: Bearer <token>` header, or a token that does not match the server's; answered 401 with this envelope before the MCP layer sees the request",
+        "way_out": "send the server's token as `Authorization: Bearer <token>` on every request",
+    },
     "W_CATEGORY_SHAPE": {
         "kind": "warning",
         "summary": "meta/extraction-plan.md `categories` is not a mapping of directory to string, or one of its values is not a string; always a warning, at every strictness",

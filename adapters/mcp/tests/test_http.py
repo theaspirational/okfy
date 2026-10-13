@@ -104,12 +104,13 @@ class _Server:
         self.thread.join(5)
 
 
-def _client(token: str) -> httpx.AsyncClient:
-    return httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=30)
+def _client(token: str, **headers: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(headers={"Authorization": f"Bearer {token}", **headers},
+                             timeout=30)
 
 
-async def _call(url: str, token: str, tool: str, args: dict) -> dict:
-    async with streamable_http_client(url, http_client=_client(token)) as (r, w, _):
+async def _call(url: str, token: str, tool: str, args: dict, **headers: str) -> dict:
+    async with streamable_http_client(url, http_client=_client(token, **headers)) as (r, w, _):
         async with ClientSession(r, w) as s:
             await s.initialize()
             res = await s.call_tool(tool, args)
@@ -263,11 +264,13 @@ def test_who_signed_the_token_wrote_the_concept(root, issuer):
         rows = [json.loads(ln) for ln in
                 (root / "meta/memory.jsonl").read_text(encoding="utf-8").splitlines()]
         assert rows[-1]["actor"] == "oidc:3f2a9c"
-        # an issuer that names the actor outright (one human, several apps)
+        # an issuer that names the actor outright (one human, several apps);
+        # the request arrives as through the reverse proxy at public_url —
+        # the SDK's host guard must accept that Host, not only localhost
         named = issuer.mint("vasyl", okfy_actor="claude:vasyl")
         out = asyncio.run(_call(url, named, "okfy_write", {
             "concept_id": "notes/a", "expect_sha256": out["sha256"],
-            "patch": [{"old": "Hash", "new": "Named", "count": 1}]}))
+            "patch": [{"old": "Hash", "new": "Named", "count": 1}]}, Host="memory.test"))
         assert out["persisted"] is True
         rows = [json.loads(ln) for ln in
                 (root / "meta/memory.jsonl").read_text(encoding="utf-8").splitlines()]

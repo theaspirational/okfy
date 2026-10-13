@@ -338,11 +338,29 @@ def http_app(path: Path, token: str | None = None, journal: Path | None = None,
     shared `token` is given, behind the SDK's JWT check when an `oidc`
     verifier is. The MCP endpoint is `/mcp`. Built by `serve_http` and by the
     tests, which mount it on a port of their own."""
-    from okfy_mcp.http import BearerToken
+    from okfy_mcp.http import WRITE_SCOPE, BearerToken
     mcp = build_server(path, journal=journal, journal_text=journal_text, shared=True,
                        oidc=oidc, public_url=public_url)
     app = mcp.streamable_http_app()
-    return app if oidc is not None else BearerToken(app, token)
+    if oidc is None:
+        return BearerToken(app, token)
+    # The SDK advertises its `required_scopes` as the resource's
+    # `scopes_supported`, conflating "what every request must carry" with
+    # "what a client should ask for". A client that reads the metadata (the
+    # MCP spec says to) would then request okfy:read only and could never
+    # write. Serve that one document ourselves: the same shape, naming both
+    # scopes, plus offline_access so a client that can refresh asks for a
+    # refresh token instead of a new login every time the access token ends.
+    from mcp.server.auth.routes import create_protected_resource_routes
+    from pydantic import AnyHttpUrl
+    from starlette.routing import Route
+    own = create_protected_resource_routes(
+        resource_url=AnyHttpUrl(public_url), authorization_servers=[AnyHttpUrl(oidc.issuer)],
+        scopes_supported=[READ_SCOPE, WRITE_SCOPE, "offline_access"])
+    paths = {r.path for r in own}
+    app.router.routes[:] = [r for r in app.router.routes
+                            if not (isinstance(r, Route) and r.path in paths)] + own
+    return app
 
 
 def serve_http(path: Path, host: str, port: int, token_file: Path | None,

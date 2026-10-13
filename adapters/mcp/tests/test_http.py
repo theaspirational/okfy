@@ -184,9 +184,9 @@ class _Issuer:
         ])
 
     def mint(self, sub: str, scope: str = "okfy:read okfy:write", aud="okfy-memory",
-             exp: int | None = None, iss: str | None = None, kid="k1") -> str:
+             exp: int | None = None, iss: str | None = None, kid="k1", **extra) -> str:
         claims = {"iss": iss or self.url, "sub": sub, "aud": aud, "scope": scope,
-                  "exp": exp or int(time.time()) + 300, "iat": int(time.time())}
+                  "exp": exp or int(time.time()) + 300, "iat": int(time.time()), **extra}
         return jwt.encode(claims, self.key, algorithm="RS256", headers={"kid": kid})
 
 
@@ -216,6 +216,8 @@ def test_who_signed_the_token_wrote_the_concept(root, issuer):
         assert r.status_code == 401 and "resource_metadata=" in r.headers["www-authenticate"]
         meta = httpx.get(base + "/.well-known/oauth-protected-resource/mcp").json()
         assert [u.rstrip("/") for u in meta["authorization_servers"]] == [issuer.url]
+        # both scopes are advertised, though only okfy:read is required to call
+        assert meta["scopes_supported"] == ["okfy:read", "okfy:write", "offline_access"]
         # tokens that never reach a tool: wrong issuer, wrong audience, expired,
         # unknown key, the old shared token, no okfy:read
         bad = [issuer.mint("human:x", iss="http://other.test"),
@@ -261,3 +263,12 @@ def test_who_signed_the_token_wrote_the_concept(root, issuer):
         rows = [json.loads(ln) for ln in
                 (root / "meta/memory.jsonl").read_text(encoding="utf-8").splitlines()]
         assert rows[-1]["actor"] == "oidc:3f2a9c"
+        # an issuer that names the actor outright (one human, several apps)
+        named = issuer.mint("vasyl", okfy_actor="claude:vasyl")
+        out = asyncio.run(_call(url, named, "okfy_write", {
+            "concept_id": "notes/a", "expect_sha256": out["sha256"],
+            "patch": [{"old": "Hash", "new": "Named", "count": 1}]}))
+        assert out["persisted"] is True
+        rows = [json.loads(ln) for ln in
+                (root / "meta/memory.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert rows[-1]["actor"] == "claude:vasyl"

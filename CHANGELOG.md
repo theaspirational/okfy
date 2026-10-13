@@ -87,6 +87,12 @@ maintainer's.
   here, this is a record, not authentication.
 - `okfy_show`'s docstring points at `okfy_write`. No existing response shape
   changed.
+- `okfy package` adds one block to `AGENTS.md`, between `<!-- okfy:direct -->`
+  markers, naming the listed types and `okfy write`. It is rendered only for a
+  bundle with a well-formed `direct` block, so every other bundle's `AGENTS.md`
+  is byte-identical, and the memory block and its 60-token bound are untouched.
+  Without it the memory block's "never written to concepts directly" was false
+  for exactly the types the owner had opened.
 
 ### New codes
 
@@ -104,9 +110,8 @@ maintainer's.
   secret scan, no archetype check, no lock, no base check, a plain `write_text`.
   It is the owner's door and was left alone; the direct lane does not go through
   it and does not inherit any of that.
-- The packaged `AGENTS.md` memory block and `protocols/memory.md` do not mention
-  the lane. An MCP agent learns it from the tool description; an agent that only
-  reads files is still told to propose.
+- `protocols/memory.md` does not mention the lane; the packaged `AGENTS.md` does
+  (see above), and an MCP agent also learns it from the tool description.
 - One commit per direct write. A write touching several concepts at once is still
   a set of proposals.
 - A concept created directly is found by `okfy query` at once and is not in

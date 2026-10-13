@@ -296,6 +296,19 @@ def _codes(bundle, level="error", **kw):
     return {f.code for f in (r.errors if level == "error" else r.warnings)}
 
 
+def test_packaged_agents_md_names_the_lane(bundle):
+    from okfy.package import render_agents_md
+    arch = load_archetype("codebase-map")
+    text = render_agents_md(bundle, arch)
+    assert "<!-- okfy:direct -->" in text and "type `note` is written at once" in text
+    with_lane = text
+    _set_purpose(bundle.root, direct=None)
+    text = render_agents_md(bundle, arch)
+    assert "okfy:direct" not in text and with_lane.startswith(text)
+    _set_purpose(bundle.root, direct={"types": []})      # malformed: no lane
+    assert "okfy:direct" not in render_agents_md(bundle, arch)
+
+
 def test_validate_checks_the_policy_block(bundle):
     assert not {c for c in _codes(bundle) if "DIRECT" in c}
     _set_purpose(bundle.root, write_policy="direct")

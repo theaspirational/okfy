@@ -1182,7 +1182,9 @@ search the user's own wording before rewriting it, `okfy fresh` instead of a
 blind re-read) — moved to a non-resident packaged file, `protocols/memory.md`,
 read on demand instead of paid for every turn. Both are written by `okfy
 package`; the protocol file disappears on repackage if the policy no longer
-allows proposals.
+allows proposals. A bundle that lists `direct.types` gets one more block, between
+`<!-- okfy:direct -->` markers, naming those types and `okfy write`: the memory
+block's "never written to concepts directly" is not true for them.
 
 ## Working memory, and what accept does not claim
 

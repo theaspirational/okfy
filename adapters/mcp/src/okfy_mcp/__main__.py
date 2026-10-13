@@ -45,6 +45,11 @@ def main(argv=None) -> int:
                    default=[], metavar="CLIENT_ID",
                    help="with --oidc-issuer: an `aud` the token must carry "
                         "(repeatable; at least one)")
+    s.add_argument("--oidc-write-group", dest="oidc_write_group", default=None,
+                   metavar="GROUP",
+                   help="with --oidc-issuer: okfy:write counts only for users whose "
+                        "token lists GROUP in its `groups` claim; everyone else "
+                        "reads only, whatever scopes their client asked for")
     s.add_argument("--public-url", dest="public_url", default=None,
                    help="--http: the URL clients reach this server at, e.g. "
                         "https://memory.example/mcp (default http://HOST:PORT/mcp). "
@@ -66,7 +71,7 @@ def main(argv=None) -> int:
                 serve_http(a.path, a.host, a.port, a.token_file,
                            journal=journal, journal_text=a.journal_text,
                            oidc_issuers=a.oidc_issuers, oidc_audiences=a.oidc_audiences,
-                           public_url=a.public_url)
+                           oidc_write_group=a.oidc_write_group, public_url=a.public_url)
             else:
                 serve(a.path, journal=journal, journal_text=a.journal_text)
         except ValueError as e:        # a coded startup refusal, not a traceback

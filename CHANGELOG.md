@@ -102,7 +102,9 @@ maintainer's.
   …), checked against its published keys (RS256, `iss`, `aud`, `exp`; discovery
   read once at start, a wrong issuer refuses to start with `E_MCP_OIDC_ISSUER`).
   Both flags repeat: an Authentik puts each client app under its own issuer
-  path, and the token's `iss` picks the key set.
+  path, and the token's `iss` picks the key set. `--oidc-write-group <name>`
+  makes `okfy:write` count only for users whose token lists that group in a
+  `groups` claim: guests read, owners write, whatever the client asked for.
   The MCP SDK's own middleware answers 401/403 in the OAuth shape and publishes
   the protected-resource metadata under `--public-url`, so an MCP client can
   find the issuer; it advertises `okfy:read`, `okfy:write` and `offline_access`

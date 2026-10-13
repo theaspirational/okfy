@@ -231,6 +231,22 @@ def test_one_bundle_several_issuers(root, issuer):
                 assert r.status_code == 401
 
 
+def test_write_group_outranks_the_scope(root, issuer):
+    """The client may ask for okfy:write for anyone; only a user the issuer
+    puts in the write group gets it."""
+    oidc = OidcVerifier([issuer.url], ["okfy-memory"], write_group="owners")
+    with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:
+        sha = asyncio.run(_call(url, issuer.mint("human:guest"), "okfy_show",
+                                {"concept_id": "notes/a"}))["sha256"]
+        args = {"concept_id": "notes/a", "expect_sha256": sha, "channel": "direct",
+                "patch": [{"old": "First", "new": "Guest", "count": 1}]}
+        for tok in (issuer.mint("human:guest", groups=["friends"]), issuer.mint("human:guest")):
+            assert asyncio.run(_call(url, tok, "okfy_write", args))["error"] == E_FORBIDDEN
+        out = asyncio.run(_call(url, issuer.mint("human:owner", groups=["owners"]),
+                                "okfy_write", args))
+        assert "error" not in out and "Guest" in (root / "notes/a.md").read_text(encoding="utf-8")
+
+
 def test_who_signed_the_token_wrote_the_concept(root, issuer):
     oidc = OidcVerifier([issuer.url], ["okfy-memory"])
     with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:

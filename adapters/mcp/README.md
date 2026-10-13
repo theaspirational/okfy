@@ -267,6 +267,11 @@ Two things change against the shared token:
   `E_MCP_FORBIDDEN` envelope and nothing is written. A read-only guest is a
   token without `okfy:write`. Both scope names are the issuer's to grant, per
   user or per client.
+- **A write group.** A scope says what the client may do for the user; it
+  does not say who the user is to the bundle. With `--oidc-write-group
+  <name>`, `okfy:write` counts only for users whose token lists that group in
+  a `groups` claim (the issuer's group), so a guest whose client asked for
+  every scope still reads only. Without the flag, the scope alone decides.
 
 Not done here, on purpose: login, users, revocation and token lifetime live in
 the issuer, once for every service that trusts it. `--token-file` and

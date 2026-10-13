@@ -804,7 +804,7 @@ One server serves exactly one bundle — the path is a launch argument, and that
 
 Setup is a paste, never an edit. OKFy will *print* you a correct config snippet — `okfy-mcp config <path> --client claude-code` — but it never writes to your client's config file, because those formats drift and would break silently. You paste the block into `.mcp.json`, restart the client, and the six `okfy_*` tools appear.
 
-Cheatsheet: `uv tool install ./adapters/mcp` installs `okfy-mcp`; `okfy-mcp serve <path>` runs the stdio server for a bundle or workspace, and `okfy-mcp serve <path> --http --token-file <file>` one HTTP server for many clients behind a bearer token; `okfy-mcp config <path> --client claude-code` prints the snippet you paste into your client.
+Cheatsheet: `uv tool install ./adapters/mcp` installs `okfy-mcp`; `okfy-mcp serve <path>` runs the stdio server for a bundle or workspace, and `okfy-mcp serve <path> --http --token-file <file>` one HTTP server for many clients behind a bearer token (or `--oidc-issuer <url> --oidc-audience <id>`: JWTs from an OpenID issuer, the token's subject as the actor, `okfy:read`/`okfy:write` as scopes); `okfy-mcp config <path> --client claude-code` prints the snippet you paste into your client.
 
 ### Fair-share output budgets (v0.24)
 

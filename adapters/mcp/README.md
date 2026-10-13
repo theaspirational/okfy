@@ -187,12 +187,15 @@ MCP-specific code: `okfy_query` answers across members with constraints pulled i
 and `okfy_show` takes namespaced ids. `okfy_links` and `okfy_propose` target a
 single bundle — point the server at that member bundle's path for those.
 
-## Transports: stdio, or HTTP behind one token
+## Transports: stdio, or HTTP behind a token
 
 stdio is the default: the client launches one server process per agent
 session, on the same machine. `--http` is the other shape: one long-running
-process on a host, reached by every client that holds the token, each seeing
-the others' writes on its next call.
+process on a host, reached by every client that may, each seeing the others'
+writes on its next call. Who may is decided one of two ways: one shared token
+from a file, or signed tokens from an OpenID issuer.
+
+### One shared token
 
 ```bash
 openssl rand -hex 32 > ~/.config/okfy/mcp-token; chmod 600 ~/.config/okfy/mcp-token
@@ -208,8 +211,9 @@ way_out}` envelope before the MCP layer sees it. The token is read from a file
 There is no unauthenticated mode.
 
 What the token is, and is not: one token, one bundle, every holder equal — it
-is the bundle's access control and nothing finer. Users, scopes or per-client
-limits belong in a reverse proxy in front, and so does TLS: this serves plain
+is the bundle's access control and nothing finer, and the `actor` on a write
+is whatever the client claims. For users, identities and scopes, use the
+issuer mode below. TLS is the proxy's job in both modes: this serves plain
 HTTP, so keep `--host` on loopback or a private interface and terminate TLS
 in the proxy. The `observed` block ("this session showed the concept before
 writing it", above) is not recorded over HTTP: one process serves every
@@ -217,3 +221,42 @@ client, so it could not say *whose* read it saw. Several `okfy-mcp` processes
 on one bundle, and several clients on one process, are safe to write
 concurrently: the core's `review_lock` and the `sha256` base check decide, as
 for stdio.
+
+### Identities from an OpenID issuer
+
+```bash
+okfy-mcp serve <path> --http --oidc-issuer https://auth.example/application/o/okfy/ \
+    --oidc-audience <client id> [--oidc-audience <another>] \
+    --public-url https://memory.example/mcp [--host ...] [--port ...]
+```
+
+Every request carries a JWT access token minted by that issuer (Authentik,
+Keycloak, any OpenID provider), as `Authorization: Bearer <token>`. The server
+reads the issuer's `.well-known/openid-configuration` once at start (a wrong
+URL refuses the start, `E_MCP_OIDC_ISSUER`), then checks each token against
+the issuer's published keys: RS256, not expired, `iss` the issuer's own,
+`aud` one of the `--oidc-audience` values (the client ids the issuer mints
+tokens for this bundle under — this is what keeps a token meant for another
+service out). Keys are fetched by `kid` and cached, so a key rotation needs
+no restart. The MCP SDK's own middleware does the HTTP side: no or bad token
+is `401`, a token without `okfy:read` is `403`, both in the OAuth shape
+(`{error, error_description}` plus `WWW-Authenticate`), and
+`/.well-known/oauth-protected-resource/mcp` names the issuer under
+`--public-url` so an MCP client can find where to log in.
+
+Two things change against the shared token:
+
+- **The actor is the token's subject**, not a string the client typed.
+  `okfy_write` and `okfy_propose` ignore their `actor` parameter and record
+  `sub` — as is when the issuer mints OKF actor strings (`human:vasyl`,
+  `agent:codex`), else `oidc:<sub>`. A write in the ledger is therefore tied
+  to an identity the issuer signed.
+- **Scopes.** `okfy:read` is required to call anything; `okfy:write` is
+  required by `okfy_write` and `okfy_propose`, else the documented
+  `E_MCP_FORBIDDEN` envelope and nothing is written. A read-only guest is a
+  token without `okfy:write`. Both scope names are the issuer's to grant, per
+  user or per client.
+
+Not done here, on purpose: login, users, revocation and token lifetime live in
+the issuer, once for every service that trusts it. `--token-file` and
+`--oidc-issuer` are exclusive.

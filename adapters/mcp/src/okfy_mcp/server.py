@@ -14,13 +14,15 @@ from mcp.server.fastmcp import FastMCP
 
 from okfy.bundle import Bundle
 from okfy_mcp import handlers, render
+from okfy_mcp.http import READ_SCOPE, actor_for
 from okfy_mcp.journal import Journal, resolve_journal_path
 from okfy_mcp.resolve import Target
 from okfy_mcp.session import Session, query_sha256
 
 
 def build_server(path: Path, journal: Path | None = None,
-                 journal_text: bool = False, shared: bool = False) -> FastMCP:
+                 journal_text: bool = False, shared: bool = False,
+                 oidc=None, public_url: str | None = None) -> FastMCP:
     """`shared`: this process will serve MANY clients at once (the HTTP
     transport, `serve_http`), not one agent session. The streamable-HTTP
     session manager then runs stateless with plain JSON responses — a phone
@@ -28,9 +30,22 @@ def build_server(path: Path, journal: Path | None = None,
     trace is kept: a trace of what one process saw is a record of one agent's
     reads, and a process shared by everyone would attest every client's
     `okfy_show` to every client's write. Over HTTP the `observed` block of a
-    proposal or direct write is simply absent, which is honest."""
+    proposal or direct write is simply absent, which is honest.
+
+    `oidc` (an `okfy_mcp.http.OidcVerifier`): every request must carry a JWT
+    from that issuer with `okfy:read`; the SDK's own middleware answers 401/403
+    and publishes the protected-resource metadata under `public_url` (the URL
+    clients reach this server at, so they can find the issuer). The actor of a
+    write is then the token's subject (`http.actor_for`), not the client's
+    claim."""
     target = Target(path)                       # validates now, fails fast
-    mcp = FastMCP("okfy", stateless_http=shared, json_response=shared)
+    auth = {}
+    if oidc is not None:
+        from mcp.server.auth.settings import AuthSettings
+        auth = dict(token_verifier=oidc, auth=AuthSettings(
+            issuer_url=oidc.issuer, resource_server_url=public_url,
+            required_scopes=[READ_SCOPE]))
+    mcp = FastMCP("okfy", stateless_http=shared, json_response=shared, **auth)
     # v0.24 (a): one trace per server process = one per agent session (the
     # stdio server IS one process per session) — never persisted, never
     # shared. See session.py's module docstring for what it proves and what
@@ -193,7 +208,8 @@ def build_server(path: Path, journal: Path | None = None,
         return out
 
     @mcp.tool()
-    def okfy_propose(target_id: str, action: str, note: str, actor: str,
+    def okfy_propose(target_id: str, action: str, note: str,
+                     actor: str | None = None,
                      content: str | None = None, evidence: dict | None = None,
                      extends: str | None = None, reopen: str | None = None,
                      distinct_from: dict[str, str] | None = None,
@@ -207,8 +223,10 @@ def build_server(path: Path, journal: Path | None = None,
         .md (frontmatter + body), omitted for delete/flag/gap or when patch
         is given. target_id is the concept id the change concerns (for
         supersede: the OLD concept being replaced; for flag, optional if
-        query is given). actor is required: who is proposing, as an OKF
-        actor such as `claude-code/1.0`. evidence is {kind, ref}: kind is
+        query is given). actor is who is proposing, as an OKF actor such as
+        `claude-code/1.0`; required, unless this server verifies your
+        identity from a signed token — then the token's subject is the actor
+        and the parameter is ignored. evidence is {kind, ref}: kind is
         test-run|owner-decision|external-source|agent-inference (only the
         last may omit ref). Search first: if the concept exists, pass
         extends=<id> instead of creating. reopen="<what changed>"
@@ -241,27 +259,30 @@ def build_server(path: Path, journal: Path | None = None,
         body instead of content (E_PATCH_SHAPE/E_PATCH_COUNT).
         A refusal returns {error, message, way_out} — follow way_out. Report a
         change as remembered ONLY when the response has persisted=true."""
-        out = handlers.safe_call(handlers.h_propose, target, target=target_id,
-                                 action=action, note=note, content=content,
-                                 actor=actor, evidence=evidence, extends=extends,
-                                 reopen=reopen, distinct_from=distinct_from,
-                                 new_id=new_id, supersedes=supersedes,
-                                 reverts=reverts, flag_type=flag_type,
-                                 query=query, patch=patch, session=session)
+        # `actor_for` runs inside safe_call: its E_MCP_FORBIDDEN is a coded
+        # refusal and must come back as the envelope, like every other
+        out = handlers.safe_call(lambda: handlers.h_propose(
+            target, target=target_id, action=action, note=note, content=content,
+            actor=actor_for(actor, write=True), evidence=evidence, extends=extends,
+            reopen=reopen, distinct_from=distinct_from, new_id=new_id,
+            supersedes=supersedes, reverts=reverts, flag_type=flag_type,
+            query=query, patch=patch, session=session))
         if jrnl is not None and "error" not in out:
             jrnl.write("propose", proposed_target=target_id)
         return out
 
     @mcp.tool()
-    def okfy_write(concept_id: str, actor: str, expect_sha256: str,
+    def okfy_write(concept_id: str, expect_sha256: str, actor: str | None = None,
                    content: str | None = None, patch: list[dict] | None = None,
                    note: str = "", evidence: dict | None = None) -> dict:
         """Write one concept against the bytes you read. expect_sha256 is the
         sha256 okfy_show returned for it, or the literal "absent" to create a
         concept that must not exist yet. Pass content (a full concept .md,
         frontmatter + body) or patch ([{old, new, count=1}] applied in order
-        to the concept's CURRENT body), never both. actor is required: who is
-        writing, as an OKF actor such as `claude-code/1.0`.
+        to the concept's CURRENT body), never both. actor is who is writing,
+        as an OKF actor such as `claude-code/1.0`; required, unless this
+        server verifies your identity from a signed token — then the token's
+        subject is the actor and the parameter is ignored.
         The bundle decides where the write goes, by concept type. channel
         "direct": the text is live now, other agents see it, and sha256 is
         the new file's — pass it as expect_sha256 for your next write.
@@ -275,10 +296,10 @@ def build_server(path: Path, journal: Path | None = None,
         the new text, then write against the new sha256. A direct write
         cannot change the concept's type or its verified / generated / stale
         / supersedes fields — leave them as okfy_show returned them."""
-        out = handlers.safe_call(handlers.h_write, target, concept_id=concept_id,
-                                 actor=actor, expect_sha256=expect_sha256,
-                                 content=content, patch=patch, note=note,
-                                 evidence=evidence, session=session)
+        out = handlers.safe_call(lambda: handlers.h_write(
+            target, concept_id=concept_id, actor=actor_for(actor, write=True),
+            expect_sha256=expect_sha256, content=content, patch=patch, note=note,
+            evidence=evidence, session=session))
         if jrnl is not None and "error" not in out:
             jrnl.write("write", proposed_target=concept_id,
                       channel=out.get("channel"))
@@ -292,25 +313,40 @@ def serve(path: Path, journal: Path | None = None,
     build_server(path, journal=journal, journal_text=journal_text).run(transport="stdio")
 
 
-def http_app(path: Path, token: str, journal: Path | None = None,
-             journal_text: bool = False):
-    """The streamable-HTTP ASGI app for `path`, behind `BearerToken`. The MCP
-    endpoint is `/mcp`. Built by `serve_http` and by the tests, which mount
-    it on a port of their own."""
+def http_app(path: Path, token: str | None = None, journal: Path | None = None,
+             journal_text: bool = False, oidc=None, public_url: str | None = None):
+    """The streamable-HTTP ASGI app for `path`: behind `BearerToken` when a
+    shared `token` is given, behind the SDK's JWT check when an `oidc`
+    verifier is. The MCP endpoint is `/mcp`. Built by `serve_http` and by the
+    tests, which mount it on a port of their own."""
     from okfy_mcp.http import BearerToken
-    mcp = build_server(path, journal=journal, journal_text=journal_text, shared=True)
-    return BearerToken(mcp.streamable_http_app(), token)
+    mcp = build_server(path, journal=journal, journal_text=journal_text, shared=True,
+                       oidc=oidc, public_url=public_url)
+    app = mcp.streamable_http_app()
+    return app if oidc is not None else BearerToken(app, token)
 
 
 def serve_http(path: Path, host: str, port: int, token_file: Path | None,
-               journal: Path | None = None, journal_text: bool = False) -> None:
-    """One process, many clients, one bearer token (`okfy_mcp.http`). The
-    token is read and checked BEFORE the bundle is opened or the port bound,
-    so a misconfigured start fails with `E_MCP_HTTP_TOKEN` and serves nothing.
-    Plain HTTP: bind to loopback or a private interface and put TLS in front."""
+               journal: Path | None = None, journal_text: bool = False,
+               oidc_issuer: str | None = None, oidc_audiences: list[str] = (),
+               public_url: str | None = None) -> None:
+    """One process, many clients (`okfy_mcp.http`): one shared token from
+    `token_file`, or JWTs from `oidc_issuer` for `oidc_audiences`. The token
+    file (or the issuer's discovery document) is read and checked BEFORE the
+    bundle is opened or the port bound, so a misconfigured start fails with
+    `E_MCP_HTTP_TOKEN` / `E_MCP_OIDC_ISSUER` and serves nothing. Plain HTTP:
+    bind to loopback or a private interface and put TLS in front."""
     import uvicorn
 
-    from okfy_mcp.http import load_token
-    token = load_token(token_file)
-    uvicorn.run(http_app(path, token, journal=journal, journal_text=journal_text),
-                host=host, port=port, log_level="warning")
+    from okfy_mcp.http import E_ISSUER, OidcVerifier, load_token
+    if oidc_issuer and token_file:
+        raise ValueError(f"{E_ISSUER}: pass --token-file (one shared token) or "
+                         "--oidc-issuer (identities from an issuer), not both")
+    if oidc_issuer:
+        oidc = OidcVerifier(oidc_issuer, list(oidc_audiences))
+        app = http_app(path, journal=journal, journal_text=journal_text, oidc=oidc,
+                       public_url=public_url or f"http://{host}:{port}/mcp")
+    else:
+        app = http_app(path, load_token(token_file), journal=journal,
+                       journal_text=journal_text)
+    uvicorn.run(app, host=host, port=port, log_level="warning")

@@ -1,27 +1,37 @@
-"""The HTTP transport: one process, many clients, one token.
+"""The HTTP transport: one process, many clients, one token — or one issuer.
 
 What is checked: no token file / short token → the server refuses to start;
 no header or a wrong token → 401 with the envelope, nothing reaches MCP; the
 right token → the seven tools, and a write from one client is found by the
 next client's search without a restart — the cross-app case the transport
-exists for.
+exists for. Then the issuer mode against a stub OpenID issuer that mints
+real RS256 tokens: who signed the token is who wrote the concept, a token
+without `okfy:write` reads but cannot write, and foreign or expired tokens
+never reach a tool.
 """
 import asyncio
 import json
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import httpx
+import jwt
 import pytest
 import uvicorn
+from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from okfy import frontmatter
 from okfy.init import init_bundle
-from okfy_mcp.http import E_TOKEN, E_UNAUTHORIZED, load_token
+from okfy_mcp.http import (E_FORBIDDEN, E_ISSUER, E_TOKEN, E_UNAUTHORIZED,
+                           OidcVerifier, load_token)
 from okfy_mcp.server import http_app
 
 TOKEN = "a" * 40
@@ -72,19 +82,20 @@ def test_no_token_no_server(tmp_path, monkeypatch):
 class _Server:
     """uvicorn on a free loopback port, in a thread, for one test."""
 
-    def __init__(self, app):
+    def __init__(self, app, path="/mcp"):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
         self.server = uvicorn.Server(uvicorn.Config(
             app, host="127.0.0.1", port=self.port, log_level="error"))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.path = path
 
     def __enter__(self):
         self.thread.start()
         for _ in range(200):
             if self.server.started:
-                return f"http://127.0.0.1:{self.port}/mcp"
+                return f"http://127.0.0.1:{self.port}{self.path}"
             self.thread.join(0.05)
         raise RuntimeError("server did not start")
 
@@ -152,3 +163,101 @@ def test_one_server_many_clients_one_token(root):
 
 def _tools_sync(url: str) -> list[str]:
     return asyncio.run(_tools(url, TOKEN))
+
+
+class _Issuer:
+    """A stub OpenID issuer, the shape Authentik or Keycloak present: a
+    discovery document, a JWKS with one RS256 key under a `kid`, and a
+    `mint` that signs whatever claims a test wants."""
+
+    def __init__(self):
+        self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwk = jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key(), as_dict=True)
+        self.jwks = {"keys": [{**jwk, "kid": "k1", "use": "sig", "alg": "RS256"}]}
+        self.url = ""
+
+    def app(self):
+        return Starlette(routes=[
+            Route("/.well-known/openid-configuration", lambda r: JSONResponse(
+                {"issuer": self.url, "jwks_uri": self.url + "/jwks"})),
+            Route("/jwks", lambda r: JSONResponse(self.jwks)),
+        ])
+
+    def mint(self, sub: str, scope: str = "okfy:read okfy:write", aud="okfy-memory",
+             exp: int | None = None, iss: str | None = None, kid="k1") -> str:
+        claims = {"iss": iss or self.url, "sub": sub, "aud": aud, "scope": scope,
+                  "exp": exp or int(time.time()) + 300, "iat": int(time.time())}
+        return jwt.encode(claims, self.key, algorithm="RS256", headers={"kid": kid})
+
+
+@pytest.fixture
+def issuer():
+    iss = _Issuer()
+    with _Server(iss.app(), path="") as url:
+        iss.url = url
+        yield iss
+
+
+def test_issuer_mode_refuses_to_start_unchecked(issuer):
+    with pytest.raises(ValueError, match=f"^{E_ISSUER}: .*at least one"):
+        OidcVerifier(issuer.url, [])
+    with pytest.raises(ValueError, match=f"^{E_ISSUER}: cannot read"):
+        OidcVerifier("http://127.0.0.1:9/nowhere", ["okfy-memory"])
+    v = OidcVerifier(issuer.url + "/", ["okfy-memory"])     # trailing slash tolerated
+    assert v.issuer == issuer.url                           # ... and the issuer's own word wins
+
+
+def test_who_signed_the_token_wrote_the_concept(root, issuer):
+    oidc = OidcVerifier(issuer.url, ["okfy-memory"])
+    with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:
+        base = url[:-len("/mcp")]
+        # an MCP client that gets 401 is told where the issuer is
+        r = httpx.post(url, json={}, headers={"Accept": "application/json, text/event-stream"})
+        assert r.status_code == 401 and "resource_metadata=" in r.headers["www-authenticate"]
+        meta = httpx.get(base + "/.well-known/oauth-protected-resource/mcp").json()
+        assert [u.rstrip("/") for u in meta["authorization_servers"]] == [issuer.url]
+        # tokens that never reach a tool: wrong issuer, wrong audience, expired,
+        # unknown key, the old shared token, no okfy:read
+        bad = [issuer.mint("human:x", iss="http://other.test"),
+               issuer.mint("human:x", aud="ray-exomem"),
+               issuer.mint("human:x", exp=int(time.time()) - 10),
+               issuer.mint("human:x", kid="k9"), TOKEN]
+        for tok in bad:
+            r = httpx.post(url, json={}, headers={
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {tok}"})
+            assert r.status_code == 401, tok
+        r = httpx.post(url, json={}, headers={
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {issuer.mint('human:x', scope='profile')}"})
+        assert r.status_code == 403
+
+        # a friend with read only: the search works, the write is refused by
+        # scope, before the lane, and nothing is written
+        friend = issuer.mint("human:friend", scope="okfy:read")
+        shown = asyncio.run(_call(url, friend, "okfy_show", {"concept_id": "notes/a"}))
+        out = asyncio.run(_call(url, friend, "okfy_write", {
+            "concept_id": "notes/a", "expect_sha256": shown["sha256"],
+            "patch": [{"old": "First line.", "new": "Friend was here.", "count": 1}]}))
+        assert out["error"] == E_FORBIDDEN and "human:friend" in out["message"]
+        assert (root / "notes/a.md").read_text(encoding="utf-8") == NOTE
+
+        # an agent with write: the ledger names the token's subject, not the
+        # actor the client typed; a subject that is no OKF actor gets `oidc:`
+        agent = issuer.mint("agent:claude-code")
+        out = asyncio.run(_call(url, agent, "okfy_write", {
+            "concept_id": "notes/a", "actor": "phone-app/1.0",
+            "expect_sha256": shown["sha256"],
+            "patch": [{"old": "First line.", "new": "Agent was here.", "count": 1}]}))
+        assert (out["channel"], out["persisted"]) == ("direct", True)
+        rows = [json.loads(ln) for ln in
+                (root / "meta/memory.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert rows[-1]["actor"] == "agent:claude-code"
+        hashed = issuer.mint("3f2a9c")                      # Authentik's default subject shape
+        out = asyncio.run(_call(url, hashed, "okfy_write", {
+            "concept_id": "notes/a", "expect_sha256": out["sha256"],
+            "patch": [{"old": "Agent", "new": "Hash", "count": 1}]}))
+        assert out["persisted"] is True
+        rows = [json.loads(ln) for ln in
+                (root / "meta/memory.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert rows[-1]["actor"] == "oidc:3f2a9c"

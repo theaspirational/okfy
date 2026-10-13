@@ -32,6 +32,22 @@ def main(argv=None) -> int:
     s.add_argument("--token-file", dest="token_file", type=Path, default=None,
                    help="file holding the one bearer token every --http client "
                         "must send (one line, 32+ characters, no whitespace)")
+    # the other --http access model: JWTs from one OpenID issuer; who wrote
+    # a concept is then the token's subject, not a string the client typed
+    s.add_argument("--oidc-issuer", dest="oidc_issuer", default=None,
+                   help="--http: accept JWT access tokens from this OpenID issuer "
+                        "URL (its .well-known/openid-configuration is read at "
+                        "start) instead of --token-file; tokens need scope "
+                        "okfy:read, writes also okfy:write")
+    s.add_argument("--oidc-audience", dest="oidc_audiences", action="append",
+                   default=[], metavar="CLIENT_ID",
+                   help="with --oidc-issuer: an `aud` the token must carry "
+                        "(repeatable; at least one)")
+    s.add_argument("--public-url", dest="public_url", default=None,
+                   help="with --oidc-issuer: the URL clients reach this server "
+                        "at, e.g. https://memory.example/mcp (default "
+                        "http://HOST:PORT/mcp); published as the protected-"
+                        "resource metadata so an MCP client can find the issuer")
     c = sub.add_parser("config", help="print an MCP client config snippet")
     c.add_argument("path", type=Path)
     c.add_argument("--client", choices=["claude-code", "claude-desktop", "cursor"],
@@ -45,7 +61,9 @@ def main(argv=None) -> int:
         try:
             if a.http:
                 serve_http(a.path, a.host, a.port, a.token_file,
-                           journal=journal, journal_text=a.journal_text)
+                           journal=journal, journal_text=a.journal_text,
+                           oidc_issuer=a.oidc_issuer, oidc_audiences=a.oidc_audiences,
+                           public_url=a.public_url)
             else:
                 serve(a.path, journal=journal, journal_text=a.journal_text)
         except ValueError as e:        # a coded startup refusal, not a traceback

@@ -228,24 +228,26 @@ for stdio.
 ### Identities from an OpenID issuer
 
 ```bash
-okfy-mcp serve <path> --http --oidc-issuer https://auth.example/application/o/okfy/ \
-    --oidc-audience <client id> [--oidc-audience <another>] \
+okfy-mcp serve <path> --http --oidc-issuer https://auth.example/application/o/claude/ \
+    --oidc-audience <client id> [--oidc-issuer <another> --oidc-audience <its client id>] \
     --public-url https://memory.example/mcp [--host ...] [--port ...]
 ```
 
-Every request carries a JWT access token minted by that issuer (Authentik,
-Keycloak, any OpenID provider), as `Authorization: Bearer <token>`. The server
-reads the issuer's `.well-known/openid-configuration` once at start (a wrong
-URL refuses the start, `E_MCP_OIDC_ISSUER`), then checks each token against
-the issuer's published keys: RS256, not expired, `iss` the issuer's own,
-`aud` one of the `--oidc-audience` values (the client ids the issuer mints
-tokens for this bundle under — this is what keeps a token meant for another
-service out). Keys are fetched by `kid` and cached, so a key rotation needs
-no restart. The MCP SDK's own middleware does the HTTP side: no or bad token
-is `401`, a token without `okfy:read` is `403`, both in the OAuth shape
-(`{error, error_description}` plus `WWW-Authenticate`), and
-`/.well-known/oauth-protected-resource/mcp` names the issuer under
-`--public-url` so an MCP client can find where to log in.
+Every request carries a JWT access token minted by one of those issuers
+(Authentik, Keycloak, any OpenID provider), as `Authorization: Bearer <token>`.
+The server reads each issuer's `.well-known/openid-configuration` once at start
+(a wrong URL refuses the start, `E_MCP_OIDC_ISSUER`), then checks each token
+against the keys of the issuer its `iss` names: RS256, not expired, `iss` one
+of the issuers' own, `aud` one of the `--oidc-audience` values (the client ids
+the issuers mint tokens for this bundle under — this is what keeps a token
+meant for another service out). Several issuers because an Authentik puts
+each registered client app (Claude, Claude Code, Codex) under its own issuer
+path, and one bundle serves them all. Keys are fetched by `kid` and cached,
+so a key rotation needs no restart. The MCP SDK's own middleware does the
+HTTP side: no or bad token is `401`, a token without `okfy:read` is `403`,
+both in the OAuth shape (`{error, error_description}` plus
+`WWW-Authenticate`), and `/.well-known/oauth-protected-resource/mcp` names
+the issuers under `--public-url` so an MCP client can find where to log in.
 
 Two things change against the shared token:
 

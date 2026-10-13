@@ -37,10 +37,10 @@ def build_server(path: Path, journal: Path | None = None,
     `oidc` it is the resource identifier of the protected-resource metadata.
 
     `oidc` (an `okfy_mcp.http.OidcVerifier`): every request must carry a JWT
-    from that issuer with `okfy:read`; the SDK's own middleware answers 401/403
-    and publishes the protected-resource metadata under `public_url`, so a
-    client can find the issuer. The actor of a write is then what the token
-    says (`http.actor_for`), not the client's claim."""
+    from one of its issuers with `okfy:read`; the SDK's own middleware answers
+    401/403 and publishes the protected-resource metadata under `public_url`,
+    so a client can find the issuers. The actor of a write is then what the
+    token says (`http.actor_for`), not the client's claim."""
     target = Target(path)                       # validates now, fails fast
     extra = {}
     if shared:
@@ -62,7 +62,7 @@ def build_server(path: Path, journal: Path | None = None,
     if oidc is not None:
         from mcp.server.auth.settings import AuthSettings
         extra.update(token_verifier=oidc, auth=AuthSettings(
-            issuer_url=oidc.issuer, resource_server_url=public_url,
+            issuer_url=oidc.issuers[0], resource_server_url=public_url,
             required_scopes=[READ_SCOPE]))
     mcp = FastMCP("okfy", stateless_http=shared, json_response=shared, **extra)
     # v0.24 (a): one trace per server process = one per agent session (the
@@ -355,7 +355,8 @@ def http_app(path: Path, token: str | None = None, journal: Path | None = None,
     from pydantic import AnyHttpUrl
     from starlette.routing import Route
     own = create_protected_resource_routes(
-        resource_url=AnyHttpUrl(public_url), authorization_servers=[AnyHttpUrl(oidc.issuer)],
+        resource_url=AnyHttpUrl(public_url),
+        authorization_servers=[AnyHttpUrl(i) for i in oidc.issuers],
         scopes_supported=[READ_SCOPE, WRITE_SCOPE, "offline_access"])
     paths = {r.path for r in own}
     app.router.routes[:] = [r for r in app.router.routes
@@ -365,23 +366,23 @@ def http_app(path: Path, token: str | None = None, journal: Path | None = None,
 
 def serve_http(path: Path, host: str, port: int, token_file: Path | None,
                journal: Path | None = None, journal_text: bool = False,
-               oidc_issuer: str | None = None, oidc_audiences: list[str] = (),
+               oidc_issuers: list[str] = (), oidc_audiences: list[str] = (),
                public_url: str | None = None) -> None:
     """One process, many clients (`okfy_mcp.http`): one shared token from
-    `token_file`, or JWTs from `oidc_issuer` for `oidc_audiences`. The token
-    file (or the issuer's discovery document) is read and checked BEFORE the
-    bundle is opened or the port bound, so a misconfigured start fails with
-    `E_MCP_HTTP_TOKEN` / `E_MCP_OIDC_ISSUER` and serves nothing. Plain HTTP:
-    bind to loopback or a private interface and put TLS in front."""
+    `token_file`, or JWTs from any of `oidc_issuers` for `oidc_audiences`.
+    The token file (or every issuer's discovery document) is read and checked
+    BEFORE the bundle is opened or the port bound, so a misconfigured start
+    fails with `E_MCP_HTTP_TOKEN` / `E_MCP_OIDC_ISSUER` and serves nothing.
+    Plain HTTP: bind to loopback or a private interface and put TLS in front."""
     import uvicorn
 
     from okfy_mcp.http import E_ISSUER, OidcVerifier, load_token
-    if oidc_issuer and token_file:
+    if oidc_issuers and token_file:
         raise ValueError(f"{E_ISSUER}: pass --token-file (one shared token) or "
                          "--oidc-issuer (identities from an issuer), not both")
     public_url = public_url or f"http://{host}:{port}/mcp"
-    if oidc_issuer:
-        oidc = OidcVerifier(oidc_issuer, list(oidc_audiences))
+    if oidc_issuers:
+        oidc = OidcVerifier(list(oidc_issuers), list(oidc_audiences))
         app = http_app(path, journal=journal, journal_text=journal_text, oidc=oidc,
                        public_url=public_url)
     else:

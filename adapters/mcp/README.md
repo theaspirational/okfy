@@ -272,6 +272,17 @@ Two things change against the shared token:
   <name>`, `okfy:write` counts only for users whose token lists that group in
   a `groups` claim (the issuer's group), so a guest whose client asked for
   every scope still reads only. Without the flag, the scope alone decides.
+- **Clients the issuer registered itself.** MCP clients that find no client
+  id register themselves with the issuer (RFC 7591) before the first login.
+  An Authentik then puts each under its own issuer path with a client id
+  nobody knew in advance. `--oidc-issuer-prefix <url>` trusts every issuer
+  under that URL as it turns up: discovery read on first sight, signature
+  checked as for any issuer, audience not (the issuer vouched for the client
+  by registering it; the scopes still bind the token to this bundle). An
+  explicit `--oidc-issuer` under the prefix keeps its audience check, and
+  only explicit issuers are named in the protected-resource metadata, so
+  name the one whose discovery document advertises the registration
+  endpoint first.
 
 Not done here, on purpose: login, users, revocation and token lifetime live in
 the issuer, once for every service that trusts it. `--token-file` and

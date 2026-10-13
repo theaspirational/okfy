@@ -386,7 +386,7 @@ def http_app(path: Path, token: str | None = None, journal: Path | None = None,
 def serve_http(path: Path, host: str, port: int, token_file: Path | None,
                journal: Path | None = None, journal_text: bool = False,
                oidc_issuers: list[str] = (), oidc_audiences: list[str] = (),
-               oidc_write_group: str | None = None,
+               oidc_write_group: str | None = None, oidc_prefixes: list[str] = (),
                public_url: str | None = None) -> None:
     """One process, many clients (`okfy_mcp.http`): one shared token from
     `token_file`, or JWTs from any of `oidc_issuers` for `oidc_audiences`.
@@ -402,7 +402,8 @@ def serve_http(path: Path, host: str, port: int, token_file: Path | None,
                          "--oidc-issuer (identities from an issuer), not both")
     public_url = public_url or f"http://{host}:{port}/mcp"
     if oidc_issuers:
-        oidc = OidcVerifier(list(oidc_issuers), list(oidc_audiences), oidc_write_group)
+        oidc = OidcVerifier(list(oidc_issuers), list(oidc_audiences), oidc_write_group,
+                            prefixes=list(oidc_prefixes))
         app = http_app(path, journal=journal, journal_text=journal_text, oidc=oidc,
                        public_url=public_url)
     else:

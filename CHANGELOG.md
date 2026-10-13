@@ -103,12 +103,17 @@ maintainer's.
   read once at start, a wrong issuer refuses to start with `E_MCP_OIDC_ISSUER`).
   The MCP SDK's own middleware answers 401/403 in the OAuth shape and publishes
   the protected-resource metadata under `--public-url`, so an MCP client can
-  find the issuer. The token's `sub` is the **actor** of `okfy_write` and
-  `okfy_propose` (their `actor` parameter is now optional and ignored under a
-  token; `oidc:<sub>` when the subject is not already an OKF actor string): the
-  first place an actor string here is a verified identity, not a declaration.
-  Scopes: `okfy:read` to call anything, `okfy:write` for the two writing tools
-  (`E_MCP_FORBIDDEN`, nothing written). Exclusive with `--token-file`.
+  find the issuer; it advertises `okfy:read`, `okfy:write` and `offline_access`
+  as `scopes_supported` (the SDK would advertise only the required scope, and
+  a client that reads it could then never write). The token names the
+  **actor** of `okfy_write` and `okfy_propose`: its `okfy_actor` claim when
+  the issuer sets one (`claude:vasyl`, `codex:vasyl`: one human, several
+  apps), else `sub` (`oidc:<sub>` when that is not already an OKF actor
+  string); the tools' `actor` parameter is now optional and ignored under a
+  token. The first place an actor string here is a verified identity, not a
+  declaration. Scopes: `okfy:read` to call anything, `okfy:write` for the two
+  writing tools (`E_MCP_FORBIDDEN`, nothing written). Exclusive with
+  `--token-file`.
 - A direct **create** of a type the plan does not declare is refused
   `E_UNKNOWN_TYPE` (reused with validate's meaning) before the lane check. It
   used to miss the lane and, over MCP, become a proposal invisible to search

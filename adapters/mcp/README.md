@@ -246,11 +246,17 @@ is `401`, a token without `okfy:read` is `403`, both in the OAuth shape
 
 Two things change against the shared token:
 
-- **The actor is the token's subject**, not a string the client typed.
+- **The actor is what the token says**, not a string the client typed.
   `okfy_write` and `okfy_propose` ignore their `actor` parameter and record
-  `sub` — as is when the issuer mints OKF actor strings (`human:vasyl`,
-  `agent:codex`), else `oidc:<sub>`. A write in the ledger is therefore tied
-  to an identity the issuer signed.
+  the token's `okfy_actor` claim when the issuer sets one (an issuer that
+  serves several agent apps can then tell them apart: `claude:vasyl`,
+  `codex:vasyl`, one human), else `sub` — as is when it already is an OKF
+  actor string (`human:vasyl`, `agent:codex`), else `oidc:<sub>`. A write in
+  the ledger is therefore tied to an identity the issuer signed.
+- **Scopes advertised.** `/.well-known/oauth-protected-resource/mcp` names
+  `okfy:read`, `okfy:write` and `offline_access` as `scopes_supported`, so a
+  client that reads it asks for all three (and for a refresh token) while only
+  `okfy:read` is required to call.
 - **Scopes.** `okfy:read` is required to call anything; `okfy:write` is
   required by `okfy_write` and `okfy_propose`, else the documented
   `E_MCP_FORBIDDEN` envelope and nothing is written. A read-only guest is a

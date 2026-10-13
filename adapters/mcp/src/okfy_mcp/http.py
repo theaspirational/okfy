@@ -158,11 +158,16 @@ class OidcVerifier:
                            expires_at=int(claims["exp"]), subject=sub, claims=claims)
 
 
+ACTOR_CLAIM = "okfy_actor"
+
+
 def actor_for(claimed: str | None, *, write: bool = False) -> str | None:
-    """The actor of this tool call. Under `OidcVerifier` it is the verified
-    token's `sub` — as itself when that already is an OKF actor string
-    (`human:vasyl`, `agent:codex`: the issuer chose readable subjects), else
-    `oidc:<sub>` — and the client's own claim is dropped: an identity the
+    """The actor of this tool call. Under `OidcVerifier` it is what the
+    verified token says — the `okfy_actor` claim when the issuer sets one
+    (an issuer that serves several agent apps can then tell them apart, e.g.
+    `claude:vasyl` and `codex:vasyl` for one human), else `sub` — as itself
+    when that already is an OKF actor string (`human:vasyl`, `agent:codex`),
+    else `oidc:<sub>`. The client's own claim is dropped: an identity the
     issuer signed outranks a string the client typed. A write also needs
     WRITE_SCOPE on the token, else `E_MCP_FORBIDDEN`. Without a token (stdio,
     or the shared file token) the claim is returned as is, for `check_actor`
@@ -170,7 +175,7 @@ def actor_for(claimed: str | None, *, write: bool = False) -> str | None:
     tok = get_access_token()
     if tok is None:
         return claimed
-    sub = tok.subject or tok.client_id
+    sub = str((tok.claims or {}).get(ACTOR_CLAIM) or tok.subject or tok.client_id)
     if write and WRITE_SCOPE not in tok.scopes:
         raise ValueError(
             f"{E_FORBIDDEN}: the token for {sub!r} carries scopes {sorted(tok.scopes)}, "

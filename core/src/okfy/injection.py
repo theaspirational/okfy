@@ -156,6 +156,24 @@ def scan_text(path: str, text: str) -> list[Finding]:
     return findings
 
 
+# Where a hard wrap cannot be: the start of a list item, heading, quote or table
+# row begins a new line of thought, like a blank line does.
+_BLOCK_START = re.compile(r"\s*(?:[-*+>|]|#{1,6}|\d+[.)])\s")
+
+
+def _unwrap(value: str) -> str:
+    """`value` with hard-wrapped lines joined by one space. A blank line and a
+    new markdown block (`_BLOCK_START`) stay line boundaries."""
+    out: list[str] = []
+    for line in value.split("\n"):
+        s = line.strip()
+        if out and out[-1] and s and not _BLOCK_START.match(line):
+            out[-1] += " " + s
+        else:
+            out.append(s)
+    return "\n".join(out)
+
+
 def scan_values(path: str, values: list[str]) -> list[Finding]:
     """v0.24: scan a list of author-controlled STRINGS — e.g. every
     frontmatter VALUE (walked recursively) plus free-text fields like a
@@ -166,14 +184,22 @@ def scan_values(path: str, values: list[str]) -> list[Finding]:
 
     Each value is still scanned twice: once as given (`scan_text` already
     handles a value that spans several of its OWN lines), and once with its
-    internal newlines collapsed to a single space — a phrase a multi-line
-    value's own line break happens to split is still caught. Findings from
-    both passes are combined and de-duplicated by (rule, excerpt); no rule
-    changes, this only widens what gets handed to the existing ones."""
+    hard wraps joined (`_unwrap`) — a phrase a line break happens to split is
+    still caught. Findings from both passes are combined and de-duplicated by
+    (rule, excerpt); no rule changes, this only widens what gets handed to the
+    existing ones.
+
+    Only a hard wrap is joined. Collapsing every newline made one line of a
+    whole concept body, and the co-occurrence rules — written for one line —
+    then read "an outbound verb, the word password and a URL anywhere in the
+    document": measured on a 48-concept bundle of working notes, 8 bodies were
+    refused, 5 of them for words in different paragraphs or different list
+    items, with the entire body as the excerpt. The price is a phrase split
+    across a blank line or a list marker, which neither pass sees."""
     seen: set[tuple[str, str]] = set()
     out: list[Finding] = []
     per_line = "\n".join(v for v in values if v)
-    collapsed = "\n".join(re.sub(r"\s*\n\s*", " ", v).strip() for v in values if v)
+    collapsed = "\n".join(_unwrap(v) for v in values if v)
     for text in (per_line, collapsed):
         for f in scan_text(path, text):
             key = (f.rule, f.excerpt)

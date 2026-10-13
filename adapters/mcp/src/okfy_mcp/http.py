@@ -27,6 +27,7 @@ to loopback or a private interface and terminate TLS in front.
 """
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -45,6 +46,7 @@ E_FORBIDDEN = "E_MCP_FORBIDDEN"
 MIN_TOKEN_CHARS = 32
 READ_SCOPE = "okfy:read"
 WRITE_SCOPE = "okfy:write"
+log = logging.getLogger(__name__)
 
 
 def load_token(path: Path | None) -> str:
@@ -139,7 +141,10 @@ class OidcVerifier:
                              "`.well-known/openid-configuration` states `issuer`"
                              ) from e
         self.audiences = list(audiences)
-        self._keys = jwt.PyJWKClient(jwks_uri, cache_keys=True)
+        # The key fetch goes through urllib with its stock User-Agent, which
+        # Cloudflare (in front of most issuers) answers 403; name the client.
+        self._keys = jwt.PyJWKClient(jwks_uri, cache_keys=True,
+                                     headers={"User-Agent": "okfy-mcp"})
 
     def _claims(self, token: str) -> dict:
         key = self._keys.get_signing_key_from_jwt(token).key   # blocking fetch
@@ -150,7 +155,10 @@ class OidcVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             claims = await anyio.to_thread.run_sync(self._claims, token)
-        except (jwt.PyJWTError, ValueError):   # bad signature, expired, wrong aud/iss, unknown kid
+        except (jwt.PyJWTError, ValueError) as e:   # bad signature, expired, wrong aud/iss, unknown kid
+            # the reason, never the token: the operator's only clue when a
+            # client that logged in fine is still answered 401
+            log.warning("token refused: %s: %s", e.__class__.__name__, e)
             return None
         sub = str(claims["sub"])
         return AccessToken(token=token, client_id=str(claims.get("azp") or sub),

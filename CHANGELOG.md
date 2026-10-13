@@ -117,9 +117,11 @@ maintainer's.
   `observed` is absent rather than attesting one client's reads to another's
   write. stdio is unchanged.
 - **`--http --oidc-issuer <url> --oidc-audience <client id>`** is the other
-  access model: JWT access tokens from one OpenID issuer (Authentik, Keycloak,
+  access model: JWT access tokens from an OpenID issuer (Authentik, Keycloak,
   …), checked against its published keys (RS256, `iss`, `aud`, `exp`; discovery
   read once at start, a wrong issuer refuses to start with `E_MCP_OIDC_ISSUER`).
+  Both flags repeat: an Authentik puts each client app under its own issuer
+  path, and the token's `iss` picks the key set.
   The MCP SDK's own middleware answers 401/403 in the OAuth shape and publishes
   the protected-resource metadata under `--public-url`, so an MCP client can
   find the issuer; it advertises `okfy:read`, `okfy:write` and `offline_access`

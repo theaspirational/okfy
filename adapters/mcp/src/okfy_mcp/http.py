@@ -112,45 +112,56 @@ class BearerToken:
 
 
 class OidcVerifier:
-    """mcp `TokenVerifier`: a JWT access token from one OpenID issuer, RS256,
-    signed by a key the issuer publishes at its `jwks_uri`, not expired, and
-    meant for one of `audiences` (the client ids the issuer registered for
+    """mcp `TokenVerifier`: a JWT access token from one of `issuers`, RS256,
+    signed by a key that issuer publishes at its `jwks_uri`, not expired, and
+    meant for one of `audiences` (the client ids the issuers registered for
     this bundle: an `aud` check is what keeps a token minted for another
-    service out of this one). The issuer's discovery document is read ONCE,
-    at construction, so a wrong `--oidc-issuer` fails the start
-    (`E_MCP_OIDC_ISSUER`) instead of failing every request later; keys are
-    fetched and cached by `kid` as tokens arrive, so a key rotation needs no
-    restart."""
+    service out of this one). Several issuers because an Authentik puts each
+    registered client app under its own issuer path, and one bundle serves
+    Claude, Claude Code and Codex alike; the token's `iss` picks the key set.
+    Every discovery document is read ONCE, at construction, so a wrong
+    `--oidc-issuer` fails the start (`E_MCP_OIDC_ISSUER`) instead of failing
+    every request later; keys are fetched and cached by `kid` as tokens
+    arrive, so a key rotation needs no restart."""
 
-    def __init__(self, issuer: str, audiences: list[str]):
+    def __init__(self, issuers: list[str], audiences: list[str]):
+        if not issuers:
+            raise ValueError(f"{E_ISSUER}: --oidc-issuer needs at least one "
+                             "issuer URL")
         if not audiences:
             raise ValueError(f"{E_ISSUER}: --oidc-issuer needs at least one "
                              "--oidc-audience (the client id the issuer minted "
                              "this bundle's tokens for)")
-        url = issuer.rstrip("/") + "/.well-known/openid-configuration"
-        try:
-            r = httpx.get(url, timeout=10, follow_redirects=True)
-            r.raise_for_status()
-            meta = r.json()
-            self.issuer = str(meta["issuer"])
-            jwks_uri = str(meta["jwks_uri"])
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
-            raise ValueError(f"{E_ISSUER}: cannot read the issuer's discovery "
-                             f"document at {url} ({e.__class__.__name__}: {e}) — "
-                             "pass the issuer URL exactly as its own "
-                             "`.well-known/openid-configuration` states `issuer`"
-                             ) from e
+        self._keys: dict[str, jwt.PyJWKClient] = {}
+        for issuer in issuers:
+            url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+            try:
+                r = httpx.get(url, timeout=10, follow_redirects=True)
+                r.raise_for_status()
+                meta = r.json()
+                name, jwks_uri = str(meta["issuer"]), str(meta["jwks_uri"])
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+                raise ValueError(f"{E_ISSUER}: cannot read the issuer's discovery "
+                                 f"document at {url} ({e.__class__.__name__}: {e}) — "
+                                 "pass the issuer URL exactly as its own "
+                                 "`.well-known/openid-configuration` states `issuer`"
+                                 ) from e
+            # The key fetch goes through urllib with its stock User-Agent,
+            # which Cloudflare (in front of most issuers) answers 403; name
+            # the client.
+            self._keys[name] = jwt.PyJWKClient(jwks_uri, cache_keys=True,
+                                               headers={"User-Agent": "okfy-mcp"})
+        self.issuers = list(self._keys)         # as the issuers state them
         self.audiences = list(audiences)
-        # The key fetch goes through urllib with its stock User-Agent, which
-        # Cloudflare (in front of most issuers) answers 403; name the client.
-        self._keys = jwt.PyJWKClient(jwks_uri, cache_keys=True,
-                                     headers={"User-Agent": "okfy-mcp"})
 
     def _claims(self, token: str) -> dict:
-        key = self._keys.get_signing_key_from_jwt(token).key   # blocking fetch
+        iss = str(jwt.decode(token, options={"verify_signature": False}).get("iss") or "")
+        keys = self._keys.get(iss)
+        if keys is None:
+            raise jwt.InvalidIssuerError(f"issuer {iss!r} is not one of {self.issuers}")
+        key = keys.get_signing_key_from_jwt(token).key   # blocking fetch
         return jwt.decode(token, key, algorithms=["RS256"], audience=self.audiences,
-                          issuer=self.issuer,
-                          options={"require": ["exp", "sub", "aud", "iss"]})
+                          issuer=iss, options={"require": ["exp", "sub", "aud", "iss"]})
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:

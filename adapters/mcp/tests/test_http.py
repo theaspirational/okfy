@@ -200,16 +200,39 @@ def issuer():
 
 
 def test_issuer_mode_refuses_to_start_unchecked(issuer):
-    with pytest.raises(ValueError, match=f"^{E_ISSUER}: .*at least one"):
-        OidcVerifier(issuer.url, [])
+    with pytest.raises(ValueError, match=f"^{E_ISSUER}: .*at least one issuer"):
+        OidcVerifier([], ["okfy-memory"])
+    with pytest.raises(ValueError, match=f"^{E_ISSUER}: .*at least one --oidc-audience"):
+        OidcVerifier([issuer.url], [])
     with pytest.raises(ValueError, match=f"^{E_ISSUER}: cannot read"):
-        OidcVerifier("http://127.0.0.1:9/nowhere", ["okfy-memory"])
-    v = OidcVerifier(issuer.url + "/", ["okfy-memory"])     # trailing slash tolerated
-    assert v.issuer == issuer.url                           # ... and the issuer's own word wins
+        OidcVerifier(["http://127.0.0.1:9/nowhere"], ["okfy-memory"])
+    v = OidcVerifier([issuer.url + "/"], ["okfy-memory"])   # trailing slash tolerated
+    assert v.issuers == [issuer.url]                        # ... and the issuer's own word wins
+
+
+def test_one_bundle_several_issuers(root, issuer):
+    """An Authentik puts each client app under its own issuer path: one
+    server trusts them all, the token's `iss` picks the keys, and a token
+    naming an issuer it was not signed by is refused."""
+    other = _Issuer()
+    with _Server(other.app(), path="") as other_url:
+        other.url = other_url
+        oidc = OidcVerifier([issuer.url, other.url], ["okfy-memory"])
+        assert oidc.issuers == [issuer.url, other.url]
+        with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:
+            meta = httpx.get(url[:-len("/mcp")] + "/.well-known/oauth-protected-resource/mcp").json()
+            assert [u.rstrip("/") for u in meta["authorization_servers"]] == [issuer.url, other.url]
+            for tok in (issuer.mint("human:a"), other.mint("human:b")):
+                assert "okfy_query" in asyncio.run(_tools(url, tok))
+            for tok in (other.mint("human:b", iss=issuer.url),      # signed by one, claims the other
+                        other.mint("human:b", iss="http://third.test")):
+                r = httpx.post(url, json={}, headers={
+                    "Authorization": f"Bearer {tok}", "Accept": "application/json, text/event-stream"})
+                assert r.status_code == 401
 
 
 def test_who_signed_the_token_wrote_the_concept(root, issuer):
-    oidc = OidcVerifier(issuer.url, ["okfy-memory"])
+    oidc = OidcVerifier([issuer.url], ["okfy-memory"])
     with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:
         base = url[:-len("/mcp")]
         # an MCP client that gets 401 is told where the issuer is

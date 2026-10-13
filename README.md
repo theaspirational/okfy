@@ -173,7 +173,7 @@ several bundles. `okfy-mcp serve <path> --http --token-file <file>` serves the
 same seven tools to many clients at once over streamable HTTP, behind one
 bearer token read from a file — no token, no server (`E_MCP_HTTP_TOKEN`); no
 header, `401` (`E_MCP_UNAUTHORIZED`); `--oidc-issuer <url> --oidc-audience <id>`
-instead takes signed JWTs from an OpenID issuer, with the token's subject as
+(both repeatable) instead takes signed JWTs from OpenID issuers, with the token's subject as
 the actor of every write and `okfy:read` / `okfy:write` as its scopes
 (`E_MCP_OIDC_ISSUER`, `E_MCP_FORBIDDEN`). `okfy-mcp serve <path> --journal <file>` (v0.24) opts in to a
 JSONL log of tool calls (query text only with `--journal-text` too) — refused

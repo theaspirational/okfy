@@ -104,6 +104,21 @@ maintainer's.
 `E_PROPOSAL_SOURCE`, `E_PROPOSAL_TRUNCATED`, `E_FRONTMATTER`, `E_PATCH_SHAPE`,
 `E_PATCH_COUNT`, `E_RESERVED_DIR`.
 
+### Changed outside the lane — a separate commit, droppable on its own
+
+- **The injection scan of an agent-written value joins hard wraps only**
+  (`okfy.injection.scan_values`, used by `okfy propose` and `okfy write` alike).
+  The second pass used to collapse every newline of a value, which turned a
+  whole concept body into one line; the co-occurrence rule for exfiltration,
+  written for one line, then matched an outbound verb, the word `password` and
+  a URL anywhere in the document. Measured on a 48-concept bundle of working
+  notes: 8 bodies refused, 5 of them for words in different paragraphs or in
+  different items of one list, each with the entire body as the excerpt. A
+  blank line and the start of a list item, heading, quote or table row are now
+  line boundaries. A phrase split by a hard wrap is still caught. One split
+  across a blank line or a list marker is seen by neither pass: that is the
+  price, and it is the maintainer's to accept or refuse.
+
 ### Not changed, and not claimed
 
 - `okfy refine` still writes whatever parses and has a `type`: no injection or

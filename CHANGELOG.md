@@ -105,6 +105,9 @@ maintainer's.
   path, and the token's `iss` picks the key set. `--oidc-write-group <name>`
   makes `okfy:write` count only for users whose token lists that group in a
   `groups` claim: guests read, owners write, whatever the client asked for.
+  `--oidc-issuer-prefix <url>` trusts every issuer under that URL as it turns
+  up (discovery on first sight, signature checked, audience not): the shape
+  an Authentik gives MCP clients that registered themselves.
   The MCP SDK's own middleware answers 401/403 in the OAuth shape and publishes
   the protected-resource metadata under `--public-url`, so an MCP client can
   find the issuer; it advertises `okfy:read`, `okfy:write` and `offline_access`

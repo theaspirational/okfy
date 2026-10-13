@@ -125,7 +125,7 @@ class OidcVerifier:
     arrive, so a key rotation needs no restart."""
 
     def __init__(self, issuers: list[str], audiences: list[str],
-                 write_group: str | None = None):
+                 write_group: str | None = None, prefixes: list[str] = ()):
         if not issuers:
             raise ValueError(f"{E_ISSUER}: --oidc-issuer needs at least one "
                              "issuer URL")
@@ -135,23 +135,8 @@ class OidcVerifier:
                              "this bundle's tokens for)")
         self._keys: dict[str, jwt.PyJWKClient] = {}
         for issuer in issuers:
-            url = issuer.rstrip("/") + "/.well-known/openid-configuration"
-            try:
-                r = httpx.get(url, timeout=10, follow_redirects=True)
-                r.raise_for_status()
-                meta = r.json()
-                name, jwks_uri = str(meta["issuer"]), str(meta["jwks_uri"])
-            except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
-                raise ValueError(f"{E_ISSUER}: cannot read the issuer's discovery "
-                                 f"document at {url} ({e.__class__.__name__}: {e}) — "
-                                 "pass the issuer URL exactly as its own "
-                                 "`.well-known/openid-configuration` states `issuer`"
-                                 ) from e
-            # The key fetch goes through urllib with its stock User-Agent,
-            # which Cloudflare (in front of most issuers) answers 403; name
-            # the client.
-            self._keys[name] = jwt.PyJWKClient(jwks_uri, cache_keys=True,
-                                               headers={"User-Agent": "okfy-mcp"})
+            name, jwks_uri = self._discover(issuer)
+            self._keys[name] = self._client(jwks_uri)
         self.issuers = list(self._keys)         # as the issuers state them
         self.audiences = list(audiences)
         # The scope says what the CLIENT may do for the user; the group says
@@ -159,15 +144,63 @@ class OidcVerifier:
         # for users the issuer lists in it (`groups` claim), so a guest whose
         # client asked for every scope still reads only.
         self.write_group = write_group
+        # Issuers under these prefixes are trusted as they turn up. An
+        # Authentik that lets MCP clients register themselves puts every
+        # registered client under its own issuer path, with a client id
+        # nobody knew in advance: discovery is read on first sight, the
+        # signature checked as for any issuer, the `aud` check skipped (the
+        # issuer vouched for the client by registering it; the scopes still
+        # bind the token to this bundle). An explicit issuer under a prefix
+        # keeps its audience check.
+        self.prefixes = [p.rstrip("/") + "/" for p in prefixes]
+        self._registered: dict[str, jwt.PyJWKClient] = {}
+
+    @staticmethod
+    def _discover(issuer: str) -> tuple[str, str]:
+        """(issuer as it states itself, jwks_uri) from the discovery document."""
+        url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+        try:
+            r = httpx.get(url, timeout=10, follow_redirects=True)
+            r.raise_for_status()
+            meta = r.json()
+            return str(meta["issuer"]), str(meta["jwks_uri"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            raise ValueError(f"{E_ISSUER}: cannot read the issuer's discovery "
+                             f"document at {url} ({e.__class__.__name__}: {e}) — "
+                             "pass the issuer URL exactly as its own "
+                             "`.well-known/openid-configuration` states `issuer`"
+                             ) from e
+
+    @staticmethod
+    def _client(jwks_uri: str) -> jwt.PyJWKClient:
+        # The key fetch goes through urllib with its stock User-Agent, which
+        # Cloudflare (in front of most issuers) answers 403; name the client.
+        return jwt.PyJWKClient(jwks_uri, cache_keys=True, headers={"User-Agent": "okfy-mcp"})
+
+    def _keys_for(self, iss: str) -> tuple[jwt.PyJWKClient, bool]:
+        """The key set for `iss`, and whether the audience is checked."""
+        if iss in self._keys:
+            return self._keys[iss], True
+        if iss not in self._registered and any(iss.startswith(p) for p in self.prefixes):
+            # ponytail: a failed discovery is not remembered, so a flood of
+            # tokens naming bogus paths under the prefix costs one fetch each
+            name, jwks_uri = self._discover(iss)        # blocking fetch
+            if name.rstrip("/") != iss.rstrip("/"):
+                raise jwt.InvalidIssuerError(f"{iss!r} states its issuer as {name!r}")
+            self._registered[iss] = self._client(jwks_uri)
+        if iss in self._registered:
+            return self._registered[iss], False
+        raise jwt.InvalidIssuerError(f"issuer {iss!r} is not one of {self.issuers}"
+                                     + (f" nor under {self.prefixes}" if self.prefixes else ""))
 
     def _claims(self, token: str) -> dict:
         iss = str(jwt.decode(token, options={"verify_signature": False}).get("iss") or "")
-        keys = self._keys.get(iss)
-        if keys is None:
-            raise jwt.InvalidIssuerError(f"issuer {iss!r} is not one of {self.issuers}")
+        keys, check_aud = self._keys_for(iss)
         key = keys.get_signing_key_from_jwt(token).key   # blocking fetch
-        return jwt.decode(token, key, algorithms=["RS256"], audience=self.audiences,
-                          issuer=iss, options={"require": ["exp", "sub", "aud", "iss"]})
+        return jwt.decode(token, key, algorithms=["RS256"], issuer=iss,
+                          audience=self.audiences if check_aud else None,
+                          options={"require": ["exp", "sub", "aud", "iss"],
+                                   "verify_aud": check_aud})
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:

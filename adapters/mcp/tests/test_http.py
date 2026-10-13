@@ -191,6 +191,30 @@ class _Issuer:
         return jwt.encode(claims, self.key, algorithm="RS256", headers={"kid": kid})
 
 
+class _Authentik(_Issuer):
+    """An issuer that, like Authentik, puts every client under its own path:
+    `<url>/o/<slug>` is an issuer of its own, all signed by one key."""
+
+    def app(self):
+        def meta(r):
+            slug = r.path_params["slug"]
+            return JSONResponse({"issuer": f"{self.url}/o/{slug}",
+                                 "jwks_uri": f"{self.url}/o/{slug}/jwks"})
+        return Starlette(routes=[
+            Route("/o/{slug}/.well-known/openid-configuration", meta),
+            Route("/o/{slug}/jwks", lambda r: JSONResponse(self.jwks)),
+        ])
+
+    def mint_for(self, slug: str, sub: str, **extra) -> str:
+        return self.mint(sub, iss=f"{self.url}/o/{slug}", **extra)
+
+
+def _post(url: str, token: str) -> int:
+    return httpx.post(url, json={}, headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream",
+    }).status_code
+
+
 @pytest.fixture
 def issuer():
     iss = _Issuer()
@@ -229,6 +253,23 @@ def test_one_bundle_several_issuers(root, issuer):
                 r = httpx.post(url, json={}, headers={
                     "Authorization": f"Bearer {tok}", "Accept": "application/json, text/event-stream"})
                 assert r.status_code == 401
+
+
+def test_clients_the_issuer_registered_itself(root):
+    """An MCP client that registered itself with the issuer gets its own
+    issuer path and a client id nobody configured: trusted under the prefix,
+    signature checked, audience not. Everything else is still refused."""
+    ak = _Authentik()
+    with _Server(ak.app(), path="") as url:
+        ak.url = url
+        oidc = OidcVerifier([url + "/o/mcp"], ["okfy-memory"], prefixes=[url + "/o/"])
+        assert oidc.issuers == [url + "/o/mcp"]            # the metadata names the explicit one
+        with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as murl:
+            fresh = ak.mint_for("claude-7f3a", "human:friend", aud="7f3a-client")
+            assert "okfy_query" in asyncio.run(_tools(murl, fresh))
+            assert _post(murl, ak.mint_for("mcp", "human:friend", aud="7f3a-client")) == 401  # explicit: aud checked
+            assert _post(murl, ak.mint("human:x", iss=url + "/elsewhere/x")) == 401         # not under the prefix
+            assert _post(murl, _Issuer().mint("human:x", iss=url + "/o/claude-7f3a")) == 401  # under it, wrong key
 
 
 def test_write_group_outranks_the_scope(root, issuer):

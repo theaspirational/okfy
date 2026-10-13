@@ -20,14 +20,22 @@ from okfy_mcp.session import Session, query_sha256
 
 
 def build_server(path: Path, journal: Path | None = None,
-                 journal_text: bool = False) -> FastMCP:
+                 journal_text: bool = False, shared: bool = False) -> FastMCP:
+    """`shared`: this process will serve MANY clients at once (the HTTP
+    transport, `serve_http`), not one agent session. The streamable-HTTP
+    session manager then runs stateless with plain JSON responses — a phone
+    app or a one-shot script needs no session bookkeeping — and no `Session`
+    trace is kept: a trace of what one process saw is a record of one agent's
+    reads, and a process shared by everyone would attest every client's
+    `okfy_show` to every client's write. Over HTTP the `observed` block of a
+    proposal or direct write is simply absent, which is honest."""
     target = Target(path)                       # validates now, fails fast
-    mcp = FastMCP("okfy")
+    mcp = FastMCP("okfy", stateless_http=shared, json_response=shared)
     # v0.24 (a): one trace per server process = one per agent session (the
     # stdio server IS one process per session) — never persisted, never
     # shared. See session.py's module docstring for what it proves and what
     # it does not.
-    session = Session()
+    session = None if shared else Session()
 
     # v0.24 (d): opt-in usage journal. Off unless a path was given; refused
     # up front (fail-fast, like `Target` above) if it would land inside what
@@ -282,3 +290,27 @@ def build_server(path: Path, journal: Path | None = None,
 def serve(path: Path, journal: Path | None = None,
          journal_text: bool = False) -> None:
     build_server(path, journal=journal, journal_text=journal_text).run(transport="stdio")
+
+
+def http_app(path: Path, token: str, journal: Path | None = None,
+             journal_text: bool = False):
+    """The streamable-HTTP ASGI app for `path`, behind `BearerToken`. The MCP
+    endpoint is `/mcp`. Built by `serve_http` and by the tests, which mount
+    it on a port of their own."""
+    from okfy_mcp.http import BearerToken
+    mcp = build_server(path, journal=journal, journal_text=journal_text, shared=True)
+    return BearerToken(mcp.streamable_http_app(), token)
+
+
+def serve_http(path: Path, host: str, port: int, token_file: Path | None,
+               journal: Path | None = None, journal_text: bool = False) -> None:
+    """One process, many clients, one bearer token (`okfy_mcp.http`). The
+    token is read and checked BEFORE the bundle is opened or the port bound,
+    so a misconfigured start fails with `E_MCP_HTTP_TOKEN` and serves nothing.
+    Plain HTTP: bind to loopback or a private interface and put TLS in front."""
+    import uvicorn
+
+    from okfy_mcp.http import load_token
+    token = load_token(token_file)
+    uvicorn.run(http_app(path, token, journal=journal, journal_text=journal_text),
+                host=host, port=port, log_level="warning")

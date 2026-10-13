@@ -215,7 +215,10 @@ is the bundle's access control and nothing finer, and the `actor` on a write
 is whatever the client claims. For users, identities and scopes, use the
 issuer mode below. TLS is the proxy's job in both modes: this serves plain
 HTTP, so keep `--host` on loopback or a private interface and terminate TLS
-in the proxy. The `observed` block ("this session showed the concept before
+in the proxy — and tell the server the URL that proxy serves it at,
+`--public-url https://memory.example/mcp`: the MCP library refuses a `Host`
+header it was not told about (its guard against DNS rebinding), so without
+it every proxied request is answered "Invalid Host header". The `observed` block ("this session showed the concept before
 writing it", above) is not recorded over HTTP: one process serves every
 client, so it could not say *whose* read it saw. Several `okfy-mcp` processes
 on one bundle, and several clients on one process, are safe to write

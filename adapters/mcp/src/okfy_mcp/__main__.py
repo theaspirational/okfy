@@ -44,10 +44,11 @@ def main(argv=None) -> int:
                    help="with --oidc-issuer: an `aud` the token must carry "
                         "(repeatable; at least one)")
     s.add_argument("--public-url", dest="public_url", default=None,
-                   help="with --oidc-issuer: the URL clients reach this server "
-                        "at, e.g. https://memory.example/mcp (default "
-                        "http://HOST:PORT/mcp); published as the protected-"
-                        "resource metadata so an MCP client can find the issuer")
+                   help="--http: the URL clients reach this server at, e.g. "
+                        "https://memory.example/mcp (default http://HOST:PORT/mcp). "
+                        "Needed behind a reverse proxy (its host is accepted in "
+                        "the Host header); with --oidc-issuer also the resource "
+                        "named in the protected-resource metadata")
     c = sub.add_parser("config", help="print an MCP client config snippet")
     c.add_argument("path", type=Path)
     c.add_argument("--client", choices=["claude-code", "claude-desktop", "cursor"],

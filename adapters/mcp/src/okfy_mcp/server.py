@@ -32,20 +32,39 @@ def build_server(path: Path, journal: Path | None = None,
     `okfy_show` to every client's write. Over HTTP the `observed` block of a
     proposal or direct write is simply absent, which is honest.
 
+    `public_url`: the URL clients reach this server at (behind a reverse
+    proxy, the proxy's); its host is accepted in the Host header, and under
+    `oidc` it is the resource identifier of the protected-resource metadata.
+
     `oidc` (an `okfy_mcp.http.OidcVerifier`): every request must carry a JWT
     from that issuer with `okfy:read`; the SDK's own middleware answers 401/403
-    and publishes the protected-resource metadata under `public_url` (the URL
-    clients reach this server at, so they can find the issuer). The actor of a
-    write is then the token's subject (`http.actor_for`), not the client's
-    claim."""
+    and publishes the protected-resource metadata under `public_url`, so a
+    client can find the issuer. The actor of a write is then what the token
+    says (`http.actor_for`), not the client's claim."""
     target = Target(path)                       # validates now, fails fast
-    auth = {}
+    extra = {}
+    if shared:
+        # The SDK's DNS-rebinding guard allows only localhost Host headers by
+        # default, so a request through a reverse proxy ("Host:
+        # memory.example") is refused before any tool runs. Allow the host
+        # named in `public_url` as well; it is what clients really send.
+        from urllib.parse import urlsplit
+
+        from mcp.server.transport_security import TransportSecuritySettings
+        hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+        origins = ["http://127.0.0.1:*", "http://localhost:*"]
+        if public_url:
+            u = urlsplit(public_url)
+            hosts.append(u.netloc)
+            origins.append(f"{u.scheme}://{u.netloc}")
+        extra["transport_security"] = TransportSecuritySettings(
+            allowed_hosts=hosts, allowed_origins=origins)
     if oidc is not None:
         from mcp.server.auth.settings import AuthSettings
-        auth = dict(token_verifier=oidc, auth=AuthSettings(
+        extra.update(token_verifier=oidc, auth=AuthSettings(
             issuer_url=oidc.issuer, resource_server_url=public_url,
             required_scopes=[READ_SCOPE]))
-    mcp = FastMCP("okfy", stateless_http=shared, json_response=shared, **auth)
+    mcp = FastMCP("okfy", stateless_http=shared, json_response=shared, **extra)
     # v0.24 (a): one trace per server process = one per agent session (the
     # stdio server IS one process per session) — never persisted, never
     # shared. See session.py's module docstring for what it proves and what
@@ -360,11 +379,12 @@ def serve_http(path: Path, host: str, port: int, token_file: Path | None,
     if oidc_issuer and token_file:
         raise ValueError(f"{E_ISSUER}: pass --token-file (one shared token) or "
                          "--oidc-issuer (identities from an issuer), not both")
+    public_url = public_url or f"http://{host}:{port}/mcp"
     if oidc_issuer:
         oidc = OidcVerifier(oidc_issuer, list(oidc_audiences))
         app = http_app(path, journal=journal, journal_text=journal_text, oidc=oidc,
-                       public_url=public_url or f"http://{host}:{port}/mcp")
+                       public_url=public_url)
     else:
         app = http_app(path, load_token(token_file), journal=journal,
-                       journal_text=journal_text)
+                       journal_text=journal_text, public_url=public_url)
     uvicorn.run(app, host=host, port=port, log_level="warning")

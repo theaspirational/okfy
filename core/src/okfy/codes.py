@@ -1400,6 +1400,16 @@ CODES: dict[str, dict] = {
         "summary": "an HTTP request to `okfy-mcp serve --http` carried no `Authorization: Bearer <token>` header, or a token that does not match the server's; answered 401 with this envelope before the MCP layer sees the request",
         "way_out": "send the server's token as `Authorization: Bearer <token>` on every request",
     },
+    "E_MCP_OIDC_ISSUER": {
+        "kind": "error",
+        "summary": "`okfy-mcp serve --http --oidc-issuer` could not start: the issuer's `.well-known/openid-configuration` could not be read (or names no `issuer`/`jwks_uri`), no --oidc-audience was given, or --token-file was passed as well; the server refuses to start rather than accept tokens it cannot check",
+        "way_out": "pass the issuer URL exactly as its discovery document states `issuer`, at least one --oidc-audience (the client id the issuer mints this bundle's tokens for), and not --token-file",
+    },
+    "E_MCP_FORBIDDEN": {
+        "kind": "error",
+        "summary": "over `--oidc-issuer`, okfy_write or okfy_propose was called with a token whose `scope` lacks `okfy:write`: the identity is verified and may read the bundle, but may not change it",
+        "way_out": "the issuer's admin grants the token's owner the `okfy:write` scope; until then read-only tools work",
+    },
     "W_CATEGORY_SHAPE": {
         "kind": "warning",
         "summary": "meta/extraction-plan.md `categories` is not a mapping of directory to string, or one of its values is not a string; always a warning, at every strictness",

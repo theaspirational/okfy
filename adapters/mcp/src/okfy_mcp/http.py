@@ -1,27 +1,50 @@
-"""Streamable-HTTP transport with one shared bearer token.
+"""Streamable-HTTP transport: one shared bearer token, or JWTs from an issuer.
 
 stdio is one process per agent session on the same machine. This is the other
-shape: one long-running process on a host, reached over HTTP by every client
-that holds the token — the same seven tools, the same bundle, every client
-seeing every other's writes on its next call.
+shape: one long-running process on a host, reached over HTTP by every client,
+the same seven tools, the same bundle, every client seeing every other's
+writes on its next call. Who may call is decided in one of two ways:
 
-The token is the whole access model. It is read from a FILE, never from a
-flag (a flag is visible in `ps` and shell history), it must be long enough
-that guessing is hopeless, and a request without it is refused before the MCP
-layer sees a byte. There are no users, scopes or sessions: one token, one
-bundle, every holder equal. Anything finer belongs in front of this server
-(a reverse proxy with its own users), not in it. Encryption is also the
-proxy's job: this serves plain HTTP, so bind it to loopback or a private
-interface and terminate TLS in front.
+`--token-file`: one shared token (`BearerToken`). Read from a FILE, never a
+flag (a flag is visible in `ps` and shell history), long enough that guessing
+is hopeless, checked before the MCP layer sees a byte. No users, scopes or
+sessions: one token, one bundle, every holder equal, and the `actor` on a
+write is whatever the client claims.
+
+`--oidc-issuer`: every request carries a JWT access token minted by one
+OpenID issuer (Authentik, Keycloak, ...), checked by `OidcVerifier` against
+the issuer's published keys. The token says WHO (`sub`, which becomes the
+ledger `actor`, so a write is signed by its author's identity and not by a
+self-declared string) and WHAT (`scope`: `okfy:read` to call anything,
+`okfy:write` for `okfy_write`/`okfy_propose`). Users, revocation and the
+login itself live in the issuer, where they are managed once for every
+service that trusts it. The MCP SDK's own auth middleware does the HTTP side
+(401/403 in the OAuth shape, protected-resource metadata so an MCP client can
+find the issuer); this module only verifies the token and names the actor.
+
+Encryption is the proxy's job either way: this serves plain HTTP, so bind it
+to loopback or a private interface and terminate TLS in front.
 """
 import hmac
 import json
 import os
 from pathlib import Path
 
+import anyio
+import httpx
+import jwt
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import AccessToken
+
+from okfy.actor import ACTOR_RE
+
 E_TOKEN = "E_MCP_HTTP_TOKEN"
 E_UNAUTHORIZED = "E_MCP_UNAUTHORIZED"
+E_ISSUER = "E_MCP_OIDC_ISSUER"
+E_FORBIDDEN = "E_MCP_FORBIDDEN"
 MIN_TOKEN_CHARS = 32
+READ_SCOPE = "okfy:read"
+WRITE_SCOPE = "okfy:write"
 
 
 def load_token(path: Path | None) -> str:
@@ -84,3 +107,73 @@ class BearerToken:
                                 (b"content-length", str(len(body)).encode()),
                                 (b"www-authenticate", b"Bearer")]})
         await send({"type": "http.response.body", "body": body})
+
+
+class OidcVerifier:
+    """mcp `TokenVerifier`: a JWT access token from one OpenID issuer, RS256,
+    signed by a key the issuer publishes at its `jwks_uri`, not expired, and
+    meant for one of `audiences` (the client ids the issuer registered for
+    this bundle: an `aud` check is what keeps a token minted for another
+    service out of this one). The issuer's discovery document is read ONCE,
+    at construction, so a wrong `--oidc-issuer` fails the start
+    (`E_MCP_OIDC_ISSUER`) instead of failing every request later; keys are
+    fetched and cached by `kid` as tokens arrive, so a key rotation needs no
+    restart."""
+
+    def __init__(self, issuer: str, audiences: list[str]):
+        if not audiences:
+            raise ValueError(f"{E_ISSUER}: --oidc-issuer needs at least one "
+                             "--oidc-audience (the client id the issuer minted "
+                             "this bundle's tokens for)")
+        url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+        try:
+            r = httpx.get(url, timeout=10, follow_redirects=True)
+            r.raise_for_status()
+            meta = r.json()
+            self.issuer = str(meta["issuer"])
+            jwks_uri = str(meta["jwks_uri"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            raise ValueError(f"{E_ISSUER}: cannot read the issuer's discovery "
+                             f"document at {url} ({e.__class__.__name__}: {e}) — "
+                             "pass the issuer URL exactly as its own "
+                             "`.well-known/openid-configuration` states `issuer`"
+                             ) from e
+        self.audiences = list(audiences)
+        self._keys = jwt.PyJWKClient(jwks_uri, cache_keys=True)
+
+    def _claims(self, token: str) -> dict:
+        key = self._keys.get_signing_key_from_jwt(token).key   # blocking fetch
+        return jwt.decode(token, key, algorithms=["RS256"], audience=self.audiences,
+                          issuer=self.issuer,
+                          options={"require": ["exp", "sub", "aud", "iss"]})
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            claims = await anyio.to_thread.run_sync(self._claims, token)
+        except (jwt.PyJWTError, ValueError):   # bad signature, expired, wrong aud/iss, unknown kid
+            return None
+        sub = str(claims["sub"])
+        return AccessToken(token=token, client_id=str(claims.get("azp") or sub),
+                           scopes=str(claims.get("scope") or "").split(),
+                           expires_at=int(claims["exp"]), subject=sub, claims=claims)
+
+
+def actor_for(claimed: str | None, *, write: bool = False) -> str | None:
+    """The actor of this tool call. Under `OidcVerifier` it is the verified
+    token's `sub` — as itself when that already is an OKF actor string
+    (`human:vasyl`, `agent:codex`: the issuer chose readable subjects), else
+    `oidc:<sub>` — and the client's own claim is dropped: an identity the
+    issuer signed outranks a string the client typed. A write also needs
+    WRITE_SCOPE on the token, else `E_MCP_FORBIDDEN`. Without a token (stdio,
+    or the shared file token) the claim is returned as is, for `check_actor`
+    to validate as before."""
+    tok = get_access_token()
+    if tok is None:
+        return claimed
+    sub = tok.subject or tok.client_id
+    if write and WRITE_SCOPE not in tok.scopes:
+        raise ValueError(
+            f"{E_FORBIDDEN}: the token for {sub!r} carries scopes {sorted(tok.scopes)}, "
+            f"not {WRITE_SCOPE}: it may read this bundle but not write to it — "
+            "the issuer's admin grants the scope")
+    return sub if ACTOR_RE.match(sub) else f"oidc:{sub}"

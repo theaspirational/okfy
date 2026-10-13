@@ -116,6 +116,18 @@ maintainer's.
   proxy's job. No `Session` trace over HTTP — one process serves every client, so
   `observed` is absent rather than attesting one client's reads to another's
   write. stdio is unchanged.
+- **`--http --oidc-issuer <url> --oidc-audience <client id>`** is the other
+  access model: JWT access tokens from one OpenID issuer (Authentik, Keycloak,
+  …), checked against its published keys (RS256, `iss`, `aud`, `exp`; discovery
+  read once at start, a wrong issuer refuses to start with `E_MCP_OIDC_ISSUER`).
+  The MCP SDK's own middleware answers 401/403 in the OAuth shape and publishes
+  the protected-resource metadata under `--public-url`, so an MCP client can
+  find the issuer. The token's `sub` is the **actor** of `okfy_write` and
+  `okfy_propose` (their `actor` parameter is now optional and ignored under a
+  token; `oidc:<sub>` when the subject is not already an OKF actor string): the
+  first place an actor string here is a verified identity, not a declaration.
+  Scopes: `okfy:read` to call anything, `okfy:write` for the two writing tools
+  (`E_MCP_FORBIDDEN`, nothing written). Exclusive with `--token-file`.
 - A direct **create** of a type the plan does not declare is refused
   `E_UNKNOWN_TYPE` (reused with validate's meaning) before the lane check. It
   used to miss the lane and, over MCP, become a proposal invisible to search
@@ -133,7 +145,8 @@ maintainer's.
 `E_DIRECT_DISABLED`, `E_DIRECT_LANE`, `E_DIRECT_TARGET`, `E_DIRECT_RETYPE`,
 `E_DIRECT_OWNER_FIELD`, `E_DIRECT_INVALID`, `E_WRITE_CONTENT`,
 `E_WRITE_BASE_MOVED`, `E_WRITE_WORKSPACE`, `E_MCP_HTTP_TOKEN`,
-`E_MCP_UNAUTHORIZED`. Reused with their meaning unchanged: `E_UNKNOWN_TYPE`,
+`E_MCP_UNAUTHORIZED`, `E_MCP_OIDC_ISSUER`, `E_MCP_FORBIDDEN`. Reused with their
+meaning unchanged: `E_UNKNOWN_TYPE`,
 `E_PROPOSAL_ACTOR`, `E_PROPOSAL_INJECTION`, `E_PROPOSAL_SECRET`,
 `E_PROPOSAL_SOURCE`, `E_PROPOSAL_TRUNCATED`, `E_FRONTMATTER`, `E_PATCH_SHAPE`,
 `E_PATCH_COUNT`, `E_RESERVED_DIR`.

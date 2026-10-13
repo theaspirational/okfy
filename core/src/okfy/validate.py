@@ -703,6 +703,8 @@ def _declared_types(bundle: Bundle, archetype) -> tuple[set, str, bool]:
                if isinstance(declared, (dict, list)) else None)
     if allowed:
         return allowed, "meta/extraction-plan.md `types`", True
+    if archetype is None:   # a caller with no archetype in hand (write_direct)
+        return set(), "no declared types", False
     return (set(archetype.canonical_types or []),
             f"archetype {archetype.name} canonical_types", False)
 

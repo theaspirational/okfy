@@ -23,10 +23,10 @@ from okfy.gitenv import run_git
 from okfy.package import append_log
 from okfy.sourcemap import cited_span
 from okfy.transcript_lint import _SEGMENT
-from okfy.validate import (LINK_RE, Report, _check_archetype, _index_mode, _norm,
-                           _shard_files, _source_checker, archetype_applies,
-                           direct_policy, ledger_prefix_check, resolve_link,
-                           review_due_date)
+from okfy.validate import (LINK_RE, Report, _check_archetype, _declared_types,
+                           _index_mode, _norm, _shard_files, _source_checker,
+                           archetype_applies, direct_policy, ledger_prefix_check,
+                           resolve_link, review_due_date)
 
 ACTIONS = {"create", "update", "delete", "supersede", "flag", "gap"}
 # v0.24 (a): a flag's --type — closed, like ACTIONS itself: an unrecognised
@@ -2329,10 +2329,23 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
                     "or send the change as a patch") from e
             raise ValueError(
                 f"E_FRONTMATTER: {e} — fix the YAML frontmatter block") from e
-    if create and meta.get("type") not in types:
-        raise ValueError(
-            f"{E_DIRECT_LANE}: the new concept has type {meta.get('type')!r}, "
-            f"which is not in direct.types {types} — {propose_instead}")
+    if create:
+        # The same contract validate enforces as E_UNKNOWN_TYPE, checked before
+        # the write instead of after: when the plan declares `types`, a concept
+        # of any other type is an error the moment it lands. Refusing it here
+        # beats the alternative — the lane check below would send it to a
+        # proposal, invisible to search, that validate rejects once accepted.
+        allowed, source, declared = _declared_types(bundle, None)
+        if declared and str(meta.get("type")) not in allowed:
+            raise ValueError(
+                f"E_UNKNOWN_TYPE: the new concept has type {meta.get('type')!r}, "
+                f"which is not in {source} {sorted(allowed)} — use one of those "
+                "(a new kind of thing is usually a tag on an existing type), or "
+                "ask the owner to declare the type in meta/extraction-plan.md")
+        if meta.get("type") not in types:
+            raise ValueError(
+                f"{E_DIRECT_LANE}: the new concept has type {meta.get('type')!r}, "
+                f"which is not in direct.types {types} — {propose_instead}")
     if not create and meta.get("type") != before.get("type"):
         raise ValueError(
             f"{E_DIRECT_RETYPE}: this write changes {concept_id}'s type from "

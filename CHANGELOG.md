@@ -87,6 +87,10 @@ maintainer's.
   here, this is a record, not authentication.
 - `okfy_show`'s docstring points at `okfy_write`. No existing response shape
   changed.
+- A direct **create** of a type the plan does not declare is refused
+  `E_UNKNOWN_TYPE` (reused with validate's meaning) before the lane check. It
+  used to miss the lane and, over MCP, become a proposal invisible to search
+  that validate rejects the moment it is accepted.
 - `okfy package` adds one block to `AGENTS.md`, between `<!-- okfy:direct -->`
   markers, naming the listed types and `okfy write`. It is rendered only for a
   bundle with a well-formed `direct` block, so every other bundle's `AGENTS.md`
@@ -99,7 +103,7 @@ maintainer's.
 `E_DIRECT_POLICY`, `E_DIRECT_KEY`, `E_DIRECT_TYPE`, `W_DIRECT_TYPE`,
 `E_DIRECT_DISABLED`, `E_DIRECT_LANE`, `E_DIRECT_TARGET`, `E_DIRECT_RETYPE`,
 `E_DIRECT_OWNER_FIELD`, `E_DIRECT_INVALID`, `E_WRITE_CONTENT`,
-`E_WRITE_BASE_MOVED`, `E_WRITE_WORKSPACE`. Reused with their meaning unchanged:
+`E_WRITE_BASE_MOVED`, `E_WRITE_WORKSPACE`. Reused with their meaning unchanged: `E_UNKNOWN_TYPE`,
 `E_PROPOSAL_ACTOR`, `E_PROPOSAL_INJECTION`, `E_PROPOSAL_SECRET`,
 `E_PROPOSAL_SOURCE`, `E_PROPOSAL_TRUNCATED`, `E_FRONTMATTER`, `E_PATCH_SHAPE`,
 `E_PATCH_COUNT`, `E_RESERVED_DIR`.

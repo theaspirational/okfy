@@ -182,6 +182,10 @@ def _cap(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:max_chars] + marker, True
 
 
+def _headings(text: str) -> list[str]:
+    return [ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")]
+
+
 def _section(text: str, heading: str) -> str:
     """Return the '## <heading>' block (heading line through the next '## ').
     Case-insensitive exact heading match; missing -> ValueError with the menu."""
@@ -199,8 +203,8 @@ def _section(text: str, heading: str) -> str:
         if grabbing:
             out.append(ln)
     if not grabbing:
-        avail = [ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")]
-        raise ValueError(f"section not found: {heading!r}; available headings: {avail}")
+        raise ValueError(f"section not found: {heading!r}; available headings: "
+                         f"{_headings(text)}")
     return "".join(out)
 
 
@@ -339,9 +343,16 @@ def _read_concept(path) -> tuple[bytes, str, str]:
 
 
 def _h_show_one(t: Target, concept_id: str, max_chars: int,
-                section: str | None, session: Session | None) -> dict:
+                section: str | None, session: Session | None,
+                outline: bool = False) -> dict:
     c = _resolve_concept(t, concept_id)
     _, file_sha256, content = _read_concept(c.path)
+    if outline:
+        # the headings and the sha, no body: pick a `section` from these
+        if session is not None:
+            session.record_show(concept_id, file_sha256)
+        return {"id": concept_id, "sha256": file_sha256,
+                "sections": _headings(content)}
     if section is not None:
         content = _section(content, section)
     content, truncated = _cap(content, max_chars)
@@ -412,7 +423,8 @@ def _h_show_many(t: Target, concept_ids: list[str], max_tokens: int,
 def h_show(t: Target, concept_id: str | None = None,
            concept_ids: list[str] | None = None, max_chars: int = 20000,
            max_tokens: int = render.DEFAULT_SHOW_MAX_TOKENS,
-           section: str | None = None, session: Session | None = None) -> dict:
+           section: str | None = None, session: Session | None = None,
+           outline: bool = False) -> dict:
     if concept_ids is not None:
         out = _h_show_many(t, concept_ids, max_tokens, session)
     elif concept_id is None:
@@ -422,7 +434,7 @@ def h_show(t: Target, concept_id: str | None = None,
               "way_out": "pass concept_id (one id) or concept_ids "
                         "(a list, max 10)"}
     else:
-        out = _h_show_one(t, concept_id, max_chars, section, session)
+        out = _h_show_one(t, concept_id, max_chars, section, session, outline)
     out["notice"] = render.NOTICE
     return out
 

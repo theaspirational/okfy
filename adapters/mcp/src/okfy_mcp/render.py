@@ -235,14 +235,12 @@ def _expansion_only_terms(original_query: str, expanded_query: str) -> set[str]:
     return set(tokenize(expanded_query)) - set(tokenize(original_query))
 
 
-def hit_matched(query_terms: set[str], expansion_only: set[str],
-                title: str, description: str) -> dict:
-    """Adapter-side token overlap, not the scorer's explanation: which of
-    the (expanded) query's terms literally occur in this hit's own
-    title/description, and which of those came from lexicon expansion
-    rather than the user's own words."""
-    hit_tokens = set(tokenize(f"{title} {description}"))
-    terms = sorted(query_terms & hit_tokens)
+def hit_matched(hit: dict, expansion_only: set[str]) -> dict:
+    """Which of the (expanded) query's terms the core found in this hit —
+    anywhere in it, body included (`matched_terms`, read off the index
+    tokens) — and which of those came from lexicon expansion rather than
+    the user's own words."""
+    terms = list(hit.get("matched_terms") or [])
     m: dict = {"terms": terms}
     via_lexicon = sorted(set(terms) & expansion_only)
     if via_lexicon:
@@ -278,15 +276,14 @@ def shape_hits(hits: list[dict], max_tokens: int, expanded_query: str,
     descriptions = [h.get("description", "") for h in shown_raw]
     rendered = fair_share(descriptions, remaining) if shown_raw else []
 
-    qterms = set(tokenize(expanded_query))
     exp_only = _expansion_only_terms(original_query, expanded_query)
 
     shown = []
     for h, (desc, truncated, _omitted_tok) in zip(shown_raw, rendered):
         nh = dict(h)
+        nh.pop("matched_terms", None)       # rendered as `matched` below
         nh["description"] = desc
         nh["view"] = "truncated" if truncated else "full"
-        nh["matched"] = hit_matched(qterms, exp_only, h.get("title", ""),
-                                    h.get("description", ""))
+        nh["matched"] = hit_matched(h, exp_only)
         shown.append(nh)
     return shown, omitted

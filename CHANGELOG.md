@@ -3,6 +3,20 @@
 This changelog starts at v0.26.0. Earlier releases are not back-filled here —
 their history is not something this file can verify.
 
+## Unreleased — the writer in git's own fields
+
+- **Every commit that writes a ledger row names its writer where git looks.**
+  The message gains an `Okfy-Actor: <actor>` trailer, read back with
+  `git log --format='%(trailers:key=Okfy-Actor,valueonly)'`. For any actor but
+  a `human:` one the commit's author is the actor too (`claude:vasyl
+  <claude-vasyl@okfy.invalid>`), so `git shortlog`, `git log --author` and
+  tools that group by author tell agents apart. A `human:` actor is the owner
+  working through their own git identity, which stays the author; the
+  committer is always whoever runs the process. Before, a hub serving many
+  agents committed everything under one name and the writer was only in
+  `meta/memory.jsonl` and `log.md`. Older commits are unchanged; the ledger
+  still covers them.
+
 ## Unreleased — retrieval: stopwords, matched terms, outline
 
 - **Stopwords leave the query.** `query.search_pool` drops a short English list

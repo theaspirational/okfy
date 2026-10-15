@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from okfy import frontmatter, memory, proposals
+from okfy.actor import owner_actor
 from okfy.archetype import load_archetype
 from okfy.bundle import Bundle
 from okfy.cli import main
@@ -475,3 +476,22 @@ def test_cli_write(bundle, tmp_path, capsys):
     assert main([*argv, "--expect", sha(bundle, "notes/a")]) == 0
     assert '"channel": "direct"' in capsys.readouterr().out
     assert bundle.get("notes/a").body == "\nFrom the CLI.\n"
+
+
+def test_the_writer_is_in_gits_own_fields_not_only_the_message(bundle):
+    """An agent's write is authored by the agent and carries an Okfy-Actor
+    trailer; the owner's refine keeps the owner's git identity as author and
+    carries the trailer too. Read back with git, no message parsing."""
+    def last(fmt):
+        return _git(bundle.root, "log", "-1", f"--format={fmt}").strip()
+    proposals.write_direct(bundle, "notes/a", actor="claude:vasyl",
+                           expect_sha256=sha(bundle, "notes/a"),
+                           text=with_body(NOTE_A, "\nBy an agent.\n"))
+    assert last("%an <%ae>") == "claude:vasyl <claude-vasyl@okfy.invalid>"
+    assert last("%cn") == "okfy test"
+    assert last("%(trailers:key=Okfy-Actor,valueonly)") == "claude:vasyl"
+    assert last("%s") == "direct: update notes/a"
+
+    proposals.refine(bundle, "notes/a", with_body(NOTE_A, "\nBy the owner.\n"))
+    assert last("%an") == "okfy test"
+    assert last("%(trailers:key=Okfy-Actor,valueonly)") == owner_actor(bundle)

@@ -72,3 +72,15 @@ def test_outline_is_headings_and_sha_only(root):
     assert set(outline) == {"id", "sha256", "sections", "notice"}
     assert outline["sections"] == ["Logins", "Where to look"]
     assert outline["sha256"] == full["sha256"]
+
+
+def test_server_instructions_name_the_gap_door(root):
+    from okfy_mcp.server import build_server
+    text = build_server(root).instructions
+    assert "okfy_propose" in text and "gap" in text
+
+
+def test_empty_search_says_what_to_do(root):
+    out = handlers.h_query(Target(root), "zzqqxx")
+    assert out["results"] == [] and out["empty_reason"] == "no-term-matched"
+    assert "okfy_propose" in out["way_out"] and "gap" in out["way_out"]

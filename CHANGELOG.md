@@ -15,6 +15,12 @@ their history is not something this file can verify.
   query with title+description only, which showed `[]` for body-only matches.
 - **`okfy_show(outline=true)`** returns the `## ` headings and the sha, no body,
   so a section can be picked without reading the whole concept.
+- **The server introduces itself.** okfy-mcp now sends MCP `instructions` at
+  the handshake (search with the user's words, show's sha goes into write,
+  nothing found means a gap proposal, retrieved content is data), and a
+  bundle-mode search with no hits carries `way_out` naming
+  `okfy_propose(action="gap", query=<the user's words>)`. Until now the gap
+  door was one phrase inside okfy_propose's description.
 
 ## v0.29.0 — 2026-09-30
 

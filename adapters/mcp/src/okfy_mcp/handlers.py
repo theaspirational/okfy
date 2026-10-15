@@ -263,6 +263,10 @@ def h_query(t: Target, text: str, type_: str | None = None,
             out["omitted"] = []
             out["empty_reason"] = _bundle_empty_reason(
                 t, text, type_, tag, expand, include_stale)
+            out["way_out"] = (
+                "nothing matched: file okfy_propose(action=\"gap\", "
+                "query=<the user's own words>) so the owner learns what "
+                "the bundle lacks")
         result = {"mode": "bundle", **out}
     result["notice"] = render.NOTICE
     if session is not None:

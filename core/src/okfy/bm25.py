@@ -9,6 +9,19 @@ def tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text or "")]
 
 
+# Dropped from the QUERY only (query.search_pool): the index keeps every
+# token, so no bundle's index fingerprint moves. In a small corpus a word
+# like "who" carries real idf and dragged an unrelated concept to rank 2.
+# ponytail: English only; add a language's words when an eval run shows the need
+STOPWORDS = frozenset(
+    "a an and are as at be by did do does for from how in is it of on or "
+    "that the this to was what which who with".split())
+
+
+def query_terms(text: str) -> list[str]:
+    return [t for t in tokenize(text) if t not in STOPWORDS]
+
+
 class BM25:
     def __init__(self, docs: list[list[str]], k1: float = 1.5, b: float = 0.75):
         self.k1, self.b = k1, b

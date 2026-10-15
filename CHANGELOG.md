@@ -3,6 +3,19 @@
 This changelog starts at v0.26.0. Earlier releases are not back-filled here —
 their history is not something this file can verify.
 
+## Unreleased — retrieval: stopwords, matched terms, outline
+
+- **Stopwords leave the query.** `query.search_pool` drops a short English list
+  (the, who, how, ...) before BM25; the index keeps every token, so no bundle's
+  index fingerprint moves. Before, `who` in a small corpus carried real idf and
+  pulled an unrelated concept to rank 2.
+- **Every hit says what it matched, body included.** `okfy query` hits carry
+  `matched_terms` (query terms, expansion included, found anywhere in the
+  concept); `okfy_query`'s `matched.terms` reads it instead of overlapping the
+  query with title+description only, which showed `[]` for body-only matches.
+- **`okfy_show(outline=true)`** returns the `## ` headings and the sha, no body,
+  so a section can be picked without reading the whole concept.
+
 ## v0.29.0 — 2026-09-30
 
 An audit of v0.28 found two gaps in the shipped tool and four in a local experiment

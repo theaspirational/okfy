@@ -2,7 +2,7 @@
 rows pin their maps_to concepts first (via: lexicon); BM25 over the expanded
 query fills the rest. Stale concepts stay visible but marked — no demotion."""
 from okfy import lexicon
-from okfy.bm25 import BM25, tokenize
+from okfy.bm25 import BM25, query_terms
 from okfy.bundle import Bundle, Concept
 from okfy.index import load_index
 
@@ -27,13 +27,19 @@ def filter_pool(idx: dict, type_: str | None = None, tag: str | None = None,
 
 def search_pool(pool: list[dict], pins: list[str], text: str, n: int) -> list[dict]:
     """Pinned concepts first (via: lexicon, no score); BM25 over the rest of
-    the pool fills the remainder of n. Pins outside the pool are dropped."""
+    the pool fills the remainder of n. Pins outside the pool are dropped.
+    Every hit carries `matched_terms`: the query's terms (stopwords dropped,
+    lexicon expansion included) found anywhere in the concept — title,
+    aliases, tags, description or body."""
     by_id = {c["id"]: c for c in pool}
+    qt = query_terms(text)
     results = [dict(_hit(by_id[p]), via="lexicon") for p in pins if p in by_id][:n]
     rest = [c for c in pool if c["id"] not in set(pins)]
     bm = BM25([c["tokens"] for c in rest])
     results += [_hit(rest[i], round(s, 3))
-                for i, s in bm.search(tokenize(text), max(0, n - len(results)))]
+                for i, s in bm.search(qt, max(0, n - len(results)))]
+    for h in results:
+        h["matched_terms"] = sorted(set(qt) & set(by_id[h["id"]]["tokens"]))
     return results
 
 

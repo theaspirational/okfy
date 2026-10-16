@@ -125,7 +125,8 @@ class OidcVerifier:
     arrive, so a key rotation needs no restart."""
 
     def __init__(self, issuers: list[str], audiences: list[str],
-                 write_group: str | None = None, prefixes: list[str] = ()):
+                 write_group: str | None = None, prefixes: list[str] = (),
+                 read_group: str | None = None):
         if not issuers:
             raise ValueError(f"{E_ISSUER}: --oidc-issuer needs at least one "
                              "issuer URL")
@@ -144,6 +145,11 @@ class OidcVerifier:
         # for users the issuer lists in it (`groups` claim), so a guest whose
         # client asked for every scope still reads only.
         self.write_group = write_group
+        # A read group closes the bundle to everyone the issuer does not list
+        # in it: one issuer can then serve several bundles, each to its own
+        # people. Outside the group, every scope is withheld, so the SDK
+        # answers 403 (insufficient scope) and nothing is served.
+        self.read_group = read_group
         # Issuers under these prefixes are trusted as they turn up. An
         # Authentik that lets MCP clients register themselves puts every
         # registered client under its own issuer path, with a client id
@@ -212,6 +218,9 @@ class OidcVerifier:
             return None
         sub = str(claims["sub"])
         scopes = str(claims.get("scope") or "").split()
+        if self.read_group and self.read_group not in (claims.get("groups") or []):
+            log.info("refused: %r is not in group %r", sub, self.read_group)
+            scopes = [s for s in scopes if s not in (READ_SCOPE, WRITE_SCOPE)]
         if (self.write_group and WRITE_SCOPE in scopes
                 and self.write_group not in (claims.get("groups") or [])):
             log.info("okfy:write withheld: %r is not in group %r", sub, self.write_group)

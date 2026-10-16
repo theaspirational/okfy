@@ -272,6 +272,11 @@ Two things change against the shared token:
   <name>`, `okfy:write` counts only for users whose token lists that group in
   a `groups` claim (the issuer's group), so a guest whose client asked for
   every scope still reads only. Without the flag, the scope alone decides.
+- **A read group.** `--oidc-read-group <name>` closes the bundle to everyone
+  the issuer does not list in that group: outside it every scope is withheld
+  and the request is answered 403, nothing served. One issuer can then serve
+  several bundles, each to its own people (a friend's, a shared one), with
+  one login. Without the flag, any token the issuer signed may read.
 - **Clients the issuer registered itself.** MCP clients that find no client
   id register themselves with the issuer (RFC 7591) before the first login.
   An Authentik then puts each under its own issuer path with a client id

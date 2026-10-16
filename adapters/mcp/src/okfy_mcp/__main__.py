@@ -57,6 +57,12 @@ def main(argv=None) -> int:
                    help="with --oidc-issuer: okfy:write counts only for users whose "
                         "token lists GROUP in its `groups` claim; everyone else "
                         "reads only, whatever scopes their client asked for")
+    s.add_argument("--oidc-read-group", dest="oidc_read_group", default=None,
+                   metavar="GROUP",
+                   help="with --oidc-issuer: only users whose token lists GROUP in "
+                        "its `groups` claim may call anything; everyone else is "
+                        "answered 403 (one issuer, several bundles, each to its "
+                        "own people)")
     s.add_argument("--public-url", dest="public_url", default=None,
                    help="--http: the URL clients reach this server at, e.g. "
                         "https://memory.example/mcp (default http://HOST:PORT/mcp). "
@@ -79,7 +85,7 @@ def main(argv=None) -> int:
                            journal=journal, journal_text=a.journal_text,
                            oidc_issuers=a.oidc_issuers, oidc_audiences=a.oidc_audiences,
                            oidc_write_group=a.oidc_write_group, oidc_prefixes=a.oidc_prefixes,
-                           public_url=a.public_url)
+                           oidc_read_group=a.oidc_read_group, public_url=a.public_url)
             else:
                 serve(a.path, journal=journal, journal_text=a.journal_text)
         except ValueError as e:        # a coded startup refusal, not a traceback

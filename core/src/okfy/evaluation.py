@@ -192,8 +192,15 @@ def _result_problems(i: int, r) -> list[str]:
         out.append(f"{at}.notes is not a list of strings — the coverage notes "
                    f"are part of the answer that was judged")
     for k in ("llm_verdict", "owner_verdict"):
-        if r[k] is not None and r[k] not in VERDICTS:
-            out.append(f"{at}.{k} is {r[k]!r}, not one of {sorted(VERDICTS)}")
+        # The TYPE comes first: `[] in VERDICTS` hashes its operand, so a list
+        # or a mapping raised `TypeError: unhashable type` out of both release
+        # predicates instead of being reported as the malformed record it is.
+        if r[k] is not None and (not isinstance(r[k], str)
+                                 or r[k] not in VERDICTS):
+            out.append(f"{at}.{k} is {type(r[k]).__name__} {r[k]!r}, not one "
+                       f"of {sorted(VERDICTS)} or null"
+                       if not isinstance(r[k], str) else
+                       f"{at}.{k} is {r[k]!r}, not one of {sorted(VERDICTS)}")
     for k in ("llm_reason", "owner_note"):
         if r[k] is not None and not isinstance(r[k], str):
             out.append(f"{at}.{k} is {type(r[k]).__name__}, not a string or null")

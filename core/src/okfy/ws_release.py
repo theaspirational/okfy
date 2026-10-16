@@ -431,10 +431,41 @@ def _check_crosswalk(ws: Workspace, problems: list, notes: list):
                  f"{len(st['stale_rows'])} stale crosswalk row(s)")
 
 
+WS_ACCEPTANCE_KEYS = ("min_owner_pass", "min_adversarial_pass")
+
+
+def _ws_acceptance(ws: Workspace) -> tuple[dict, str | None]:
+    """The workspace's `acceptance` policy as a mapping, plus the finding that
+    says why it is not one. Checked BEFORE any bar is read: a policy that is a
+    list, or that misspells `min_owner_pass`, used to be replaced by `{}` and
+    the default minimum, so a workspace that declared a stricter bar was judged
+    against a weaker one and passed. Absent or null is the documented default
+    (the bundle side's `acc is None` return); everything else must be a mapping
+    over the closed key set."""
+    acc = ws.meta.get("acceptance")
+    if acc is None:
+        return {}, None
+    if not isinstance(acc, dict):
+        return {}, (f"E_REL_WS_ACCEPTANCE_INVALID: meta/workspace.md "
+                    f"`acceptance` is {type(acc).__name__}, not a mapping — "
+                    "the workspace's release policy cannot be read, so the "
+                    "default bar would silently replace it")
+    unknown = sorted(str(k) for k in acc if k not in WS_ACCEPTANCE_KEYS)
+    if unknown:
+        return {}, (f"E_REL_WS_ACCEPTANCE_INVALID: unknown acceptance key(s) "
+                    f"{', '.join(map(repr, unknown))} (known: "
+                    f"{', '.join(WS_ACCEPTANCE_KEYS)}) — an unrecognised key "
+                    "is a policy that silently does nothing")
+    return acc, None
+
+
 def _check_ws_eval(ws: Workspace, suite: str, problems: list, notes: list):
     from okfy.evaluation import eval_status, latest_run, load_evals
     tag = "EVAL" if suite == "acceptance" else "ADVERSARIAL"
     field = "test_queries" if suite == "acceptance" else "adversarial_queries"
+    acc, acc_bad = _ws_acceptance(ws)
+    if acc_bad and acc_bad not in problems:       # one finding, not one per suite
+        problems.append(acc_bad)
     for msg in _surface_problems(ws_suite_queries(ws, suite), field,
                                  where="meta/workspace.md"):
         problems.append(f"E_REL_WS_{tag}_SURFACE: {msg}")
@@ -481,8 +512,10 @@ def _check_ws_eval(ws: Workspace, suite: str, problems: list, notes: list):
     else:
         _ws_replay(ws, latest, suite, tag, problems, notes)
     key = ("min_owner_pass" if suite == "acceptance" else "min_adversarial_pass")
-    acc = ws.meta.get("acceptance")
-    acc = acc if isinstance(acc, dict) else {}
+    # `acc` was validated above (shape and key set) BEFORE this default is read;
+    # a policy that cannot be read has no bar to compare the passes against.
+    if acc_bad:
+        return
     bar = acc.get(key, DEFAULT_MIN_OWNER_PASS)
     if isinstance(bar, bool) or not isinstance(bar, int):
         problems.append(f"E_REL_WS_ACCEPTANCE_INVALID: acceptance.{key} is "

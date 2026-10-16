@@ -67,7 +67,7 @@ def record(bundle, event: str, *, actor: str, proposal: str | None, target: str 
            reason: str | None = None, reopen: str | None = None,
            match_sha256: str | None = None, new_id: str | None = None,
            by_proposal: str | None = None, origin: str | None = None,
-           channel: str | None = None) -> dict:
+           channel: str | None = None, observed: dict | None = None) -> dict:
     if event not in EVENTS:
         raise ValueError(f"unknown memory event {event!r} (use: {list(EVENTS)})")
     row = {"event": event, "at": utc_now(), "actor": actor, "proposal": proposal,
@@ -75,7 +75,7 @@ def record(bundle, event: str, *, actor: str, proposal: str | None, target: str 
     for k, v in (("base_sha256", base_sha256), ("reason", reason), ("reopen", reopen),
                  ("match_sha256", match_sha256), ("new_id", new_id),
                  ("by_proposal", by_proposal), ("origin", origin),
-                 ("channel", channel)):
+                 ("channel", channel), ("observed", observed)):
         if v is not None:
             row[k] = v
     path = bundle.root / MEMORY_FILE
@@ -184,6 +184,23 @@ def events_at_head(bundle) -> tuple[list[dict], list[str]]:
 # this alias is what it calls instead, so the public `events(bundle)` name
 # (read by many other modules and tests) stays exactly as it is.
 _read_events = events
+
+
+def latest_decisions(bundle, targets) -> dict[str, dict]:
+    """`{target: its most recent ledger row}` for the ids in `targets`, file
+    order being chronological order. The ONE fold `okfy.update.
+    unresolved_rejections` and `okfy.proposals.dismiss` both read, so they
+    cannot disagree about whether a rejection still stands.
+
+    An agent's direct write (`origin: agent-direct`) is an `accept` row by
+    shape, but no owner decided anything: it never becomes the latest
+    decision, so it neither disposes of a standing rejection nor hides it."""
+    latest: dict[str, dict] = {}
+    for row in events(bundle)[0]:
+        target = row.get("target")
+        if target in targets and row.get("origin") != "agent-direct":
+            latest[target] = row
+    return latest
 
 
 def rejected_hashes(bundle, *, from_events: list[dict] | None = None) -> dict[str, dict]:

@@ -3,6 +3,432 @@
 This changelog starts at v0.26.0. Earlier releases are not back-filled here —
 their history is not something this file can verify.
 
+## Unreleased
+
+An audit of v0.29 found three issues in the shipped tool. The three fixes below do not change
+how `okfy query` ranks a single bundle. The contributed retrieval change (the first of the
+contributed subsections below) does: it moves the retrieval code digest (see there).
+
+### Stricter behaviour
+
+- **A workspace `acceptance` policy is a closed, typed mapping.** `release-check` on a
+  workspace used to replace an `acceptance` that was not a mapping (a list, a string) with
+  `{}`, and ignored unknown keys, so a misspelled `min_owner_pas: 10` silently judged the
+  workspace against the default bar of 8. Now `acceptance` absent or `null` keeps the
+  defaults; otherwise only `min_owner_pass` and `min_adversarial_pass` are allowed, each an
+  integer, and anything else is `E_REL_WS_ACCEPTANCE_INVALID` naming the key or the shape.
+  A workspace that declared such a policy can fail now where it passed before.
+- **A non-string verdict is a malformed eval record, not a crash.** An `owner_verdict` or
+  `llm_verdict` that is a list or a mapping raised `TypeError` out of both release
+  predicates. It is now `E_REL_EVAL_INVALID` (bundle) or `E_REL_WS_EVAL_INVALID` (workspace)
+  with `ok: false`, from the API and the CLI alike.
+
+### Faster federation
+
+- `federated_query` loads each member's index once per query instead of M² + 2M times
+  (24 loads for four members). The answers were byte-identical to the previous release's
+  (before the stopword change below). Measured on synthetic workspaces only, the median
+  time per query fell by 1.2× to 5.2×.
+- `federate.py` is part of the federation code digest, so recorded federated eval runs now
+  read stale against the new code: re-run `okfy eval run <workspace>` and repeat the owner
+  checkpoint. No recorded run is rewritten.
+
+### Codes
+
+- **Widened, same names:** `E_REL_WS_ACCEPTANCE_INVALID` also covers a non-mapping policy
+  and unknown keys; `E_REL_EVAL_INVALID` and `E_REL_WS_EVAL_INVALID` also cover a non-string
+  verdict.
+
+### Not claimed
+
+- Nothing here measures extraction accuracy or the quality of an agent's answers.
+
+### Retrieval: stopwords, matched terms, outline
+
+Contributed by @theaspirational (vsov/okfy#5).
+
+**This moves the retrieval code digest.** `bm25.py` and `query.py` are in `RETRIEVAL_MODULES`,
+so `retrieval_code_digest()` changes from `11e03e87…a83638d` to `1c923e5c…b021` and every
+recorded eval run, bundle or workspace, reads stale against the new code: re-run
+`okfy eval run` and repeat the owner checkpoint. No recorded run is rewritten. Ranking can
+change for any query containing a listed stopword, in a single bundle and in a workspace
+(`federated_query` ranks through the same `search_pool`).
+The digest value above is the one after both contributed changes in this section and the
+next (`okfy links` also lives in `query.py`); it is what the working tree computes, not a
+step-by-step history.
+
+- **Stopwords leave the query.** `query.search_pool` drops a short English list
+  (the, who, how, ...) before BM25; the index keeps every token, so no bundle's
+  index fingerprint moves. Before, `who` in a small corpus carried real idf and
+  pulled an unrelated concept to rank 2.
+- **Every hit says what it matched, body included.** `okfy query` hits carry
+  `matched_terms` (query terms, expansion included, found anywhere in the
+  concept); `okfy_query`'s `matched.terms` reads it instead of overlapping the
+  query with title+description only, which showed `[]` for body-only matches.
+- **`okfy_show(outline=true)`** returns the `## ` headings and the sha, no body,
+  so a section can be picked without reading the whole concept.
+- **The server introduces itself.** okfy-mcp now sends MCP `instructions` at
+  the handshake (search with the user's words, show's sha goes into write,
+  nothing found means a gap proposal, retrieved content is data), and a
+  bundle-mode search with no hits carries `way_out` naming
+  `okfy_propose(action="gap", query=<the user's words>)`. Until now the gap
+  door was one phrase inside okfy_propose's description.
+
+### Stable page identity: `bundle_uid`, `okf_id`, `okfy migrate ids`
+
+Contributed by @theaspirational (vsov/okfy#4).
+
+A concept id is its path, so it changes when a page moves. Two frontmatter keys do not.
+
+- **`bundle_uid`** in `meta/purpose.md` names the bundle; `okfy init` writes it.
+  **`okf_id`** in each concept page outside `meta/` names the page and travels with the file
+  through a rename. `okfy review accept` gives a created or superseding page a fresh `okf_id`
+  and keeps the page's own, and purpose.md's `bundle_uid`, through an update; `okfy refine`
+  refuses text that changes either. Reserved pages (`index.md`, `log.md`, the root docs,
+  `meta/*`) carry none: they are addressed as `bundle_uid` plus their path.
+- **`okfy migrate ids <bundle>`** backfills both into a bundle made before ids existed, as
+  uuid5s derived from history every full clone shares, so two clones migrating offline
+  agree; a rerun writes nothing; an id once written is never recomputed. A shallow clone
+  that does not reach the creating commit derives different ids: migrate from a full clone.
+  It commits past the policy hook, like `okfy stale`.
+- **An older bundle stays green.** A missing id is a warning only (`W_BUNDLE_UID_MISSING`,
+  `W_OKF_ID_MISSING`); `E_BUNDLE_UID`, `E_OKF_ID` (present but blank or not a string) and
+  `E_OKF_ID_DUPLICATE` (two pages share one) are errors, and none of them can fire on a
+  bundle that has no such key.
+- **Any URI scheme is an external link.** `[x](other-tool://node/page.md)` used to resolve as
+  a bundle path and warn `W_DANGLING_LINK`; it is now external, and `okfy links` and
+  `okfy_links` return an `external` list beside `out` and `backlinks`.
+- **A bundle embedded anywhere in a corpus is not corpus.** It is recognised by its
+  `meta/purpose.md` and `meta/corpus.md` (with their `type`), not by a dot-folder name, and is
+  left out of `okfy survey`, the snapshot manifest and `okfy diff`; `okfy init --embed` no
+  longer lists its own bundle. A corpus that held a non-dot embedded bundle will see those
+  files leave its manifest on the next `okfy snapshot`.
+- **`meta/corpus.md` records `manifest_digest`**, one sha256 over `meta/corpus-manifest.json`,
+  written by `okfy init` and `okfy snapshot`; `okfy validate` refuses a mismatch with
+  `E_MANIFEST_DIGEST`. A snapshot made before this key keeps validating.
+- **Retrieval:** the index is untouched, so no bundle's index fingerprint moves. The code
+  digest moves because `okfy links` is in `query.py` (see the digest note above); no ranking
+  changes.
+
+New codes: `W_BUNDLE_UID_MISSING`, `W_OKF_ID_MISSING`, `E_BUNDLE_UID`, `E_OKF_ID`,
+`E_OKF_ID_DUPLICATE`, `E_MANIFEST_DIGEST`.
+
+### Direct-write lane: types the owner opens are written without review
+
+Contributed by @theaspirational (vsov/okfy#6).
+
+Until now an agent had one way to write: file a proposal and wait for the owner.
+That is right for knowledge and wrong for session notes, observations and logs,
+where several agents working at once need to see each other's writes now. This
+adds a second lane the owner opens per concept type. Nothing changes for a bundle
+that does not open it, and no version is bumped here: the number is the
+maintainer's.
+
+#### Stricter behaviour — read this before upgrading
+
+- **`direct` in `meta/purpose.md` is now a checked key.** A bundle that already
+  carried a `direct:` key of its own fails `okfy validate`: `E_DIRECT_KEY` (not a
+  mapping, or a key other than `types`), `E_DIRECT_TYPE` (`types` is not a
+  non-empty list of names, or names a type outside the plan's declared `types`)
+  and `E_DIRECT_POLICY` (declared while `write_policy` is not `proposals`, where
+  the block would silently do nothing). All three are errors at every strictness
+  level, like `E_WRITE_POLICY`: it is a trust boundary. A listed type outside the
+  archetype's canonical list, in a bundle that declares no `types`, is
+  `W_DIRECT_TYPE` and becomes `E_DIRECT_TYPE` under `--strict-schema`.
+- **"An MCP tool call can never touch a final concept" is now true per bundle, not
+  per adapter.** It holds exactly as before for every bundle without a `direct`
+  block, and for `okfy_propose` always. A bundle that lists `direct.types` has
+  chosen otherwise for those types.
+
+#### The lane
+
+- `meta/purpose.md`, under `write_policy: proposals`, may declare
+  `direct: {types: [note, session-log]}`. `write_policy` keeps its two literals and
+  the pre-commit hook is unchanged: a direct write commits through the same
+  `_commit` every sanctioned writer uses.
+- `okfy.proposals.write_direct(bundle, concept_id, *, actor, expect_sha256,
+  text=None, patch=None, note="", observed=None, archetype=None)` writes a
+  concept whose type is listed, at once. The lane is decided by the concept's
+  current type on an update and by the proposed type on a create; `meta/` and the
+  other reserved directories are never in it, so the policy cannot rewrite itself.
+- Concurrency is optimistic and adds no lock. `expect_sha256` is the sha256 of the
+  file the author read (the digest `okfy_show` already returns), or `absent` to
+  create. The check and the write are one step under the existing `review_lock`;
+  the file is read once and the digest and the text both come from that read; the
+  write is a temp file and a rename. Two writers holding the same sha256: one
+  lands, the other is refused `E_WRITE_BASE_MOVED` with the current sha256. A hand
+  edit takes no lock: one made before that read is refused the same way, one made
+  between the read and the rename is lost. That window is the honest limit of
+  compare-then-rename.
+- What a proposal would be refused for is refused here, by the same functions: the
+  injection and secret scans (now `_refuse_scan`, shared with the propose gate),
+  `sources:` outside the corpus, and the archetype schema `review accept` applies
+  (`E_DIRECT_INVALID`). The rejected-content and duplicate-title gates belong to
+  the review queue and do not run.
+- A direct write cannot change `type` (`E_DIRECT_RETYPE`) or what an owner decision
+  wrote: `verified`, `generated`, `stale`/`stale_reason`/`stale_since`,
+  `supersedes`/`superseded_by` (`E_DIRECT_OWNER_FIELD`). They are carried over from
+  the file. A concept edited this way after a verification warns
+  `W_VERIFIED_SUPERSEDED`, as after a `refine`.
+- Page identity stays the core's (vsov/okfy#4 meets this lane; added when integrating).
+  A direct update keeps the page's own `okf_id` whatever the text carries (a rewrite
+  that dropped, forged or copied one does not re-identify the page, and cannot raise
+  `E_OKF_ID_DUPLICATE`), and a direct create gets a fresh one, as `review accept` does.
+  Without this a created page had none (`W_OKF_ID_MISSING`) and a full-content update
+  could replace it.
+- The ledger row is an `accept` with `proposal: null`, `origin: agent-direct`, the
+  agent as actor and `base_sha256`. Readers of `accept` rows see it as a content
+  write: `release-check` counts it among the changes since the last package and
+  `okfy diff` lists the concept as protected. It is not a decision, though:
+  `okfy.update.unresolved_rejections` and `okfy dismiss` now read one shared
+  fold (`okfy.memory.latest_decisions`) that skips it, so an agent's write
+  neither disposes of an owner's rejection nor stops the owner dismissing it.
+- `okfy write <bundle> <concept_id> --as <actor> --expect <sha256|absent>
+  (--from <file> | --patch-file <hunks.json>) [--note …]` is the CLI door. It
+  refuses; it does not fall back.
+
+#### MCP
+
+- `okfy_write(concept_id, actor, expect_sha256, content?, patch?, note?,
+  evidence?)` (`actor` is optional in the tool schema since the HTTP transport
+  below; a call with no verified token and no actor is still refused). The agent does not need to know the policy: a listed type is written
+  at once (`channel: "direct"`, with the new file's `sha256`); any other type, and
+  any bundle with no lane, is filed through the `okfy_propose` path
+  (`channel: "proposal"`) and only if the target is still at `expect_sha256`
+  (`okfy.proposals.propose_checked`: check and filing under one lock).
+  `persisted: true` in both cases. A refusal is `{error, message, way_out}`;
+  `E_WRITE_BASE_MOVED` also carries `current_sha256`.
+- A direct write's ledger row keeps four counters from the server's own session
+  trace: `by`, `queries`, `target_shown` and `base_shown`, the last being whether
+  this session was shown the concept at the very sha256 it wrote against. An agent
+  that takes `current_sha256` from a refusal and writes without reading is
+  therefore visible in the ledger. It is not prevented: like every actor string
+  here, this is a record, not authentication.
+- `okfy_show`'s docstring points at `okfy_write`. No existing response shape
+  changed.
+- A direct **create** of a type the plan does not declare is refused
+  `E_UNKNOWN_TYPE` (reused with validate's meaning) before the lane check. It
+  used to miss the lane and, over MCP, become a proposal invisible to search
+  that validate rejects the moment it is accepted.
+- `okfy package` adds one block to `AGENTS.md`, between `<!-- okfy:direct -->`
+  markers, naming the listed types and `okfy write`. It is rendered only for a
+  bundle with a well-formed `direct` block, so every other bundle's `AGENTS.md`
+  is byte-identical, and the memory block and its 60-token bound are untouched.
+  Without it the memory block's "never written to concepts directly" was false
+  for exactly the types the owner had opened.
+
+#### New codes
+
+`E_DIRECT_POLICY`, `E_DIRECT_KEY`, `E_DIRECT_TYPE`, `W_DIRECT_TYPE`,
+`E_DIRECT_DISABLED`, `E_DIRECT_LANE`, `E_DIRECT_TARGET`, `E_DIRECT_RETYPE`,
+`E_DIRECT_OWNER_FIELD`, `E_DIRECT_INVALID`, `E_WRITE_CONTENT`,
+`E_WRITE_BASE_MOVED`, `E_WRITE_WORKSPACE`. Reused with their meaning unchanged: `E_UNKNOWN_TYPE`,
+`E_PROPOSAL_ACTOR`, `E_PROPOSAL_INJECTION`, `E_PROPOSAL_SECRET`,
+`E_PROPOSAL_SOURCE`, `E_PROPOSAL_TRUNCATED`, `E_FRONTMATTER`, `E_PATCH_SHAPE`,
+`E_PATCH_COUNT`, `E_RESERVED_DIR`.
+
+#### Changed outside the lane — the injection scan
+
+- **The injection scan of an agent-written value joins hard wraps only**
+  (`okfy.injection.scan_values`, used by `okfy propose` and `okfy write` alike).
+  The second pass used to collapse every newline of a value, which turned a
+  whole concept body into one line; the co-occurrence rule for exfiltration,
+  written for one line, then matched an outbound verb, the word `password` and
+  a URL anywhere in the document. Measured on a 48-concept bundle of working
+  notes: 8 bodies refused, 5 of them for words in different paragraphs or in
+  different items of one list, each with the entire body as the excerpt. A
+  blank line and the start of a list item, heading, quote or table row are now
+  line boundaries. A phrase split by a hard wrap is still caught. The owner
+  accepted the price when integrating this change. Exactly what the scan no
+  longer sees, measured against the previous scan (585 phrase/separator cases, no
+  case where the new scan reports something the old one did not):
+  - `instruction-override` and `identity-reassignment`: a phrase cut by a blank
+    line (or a whitespace-only line) between two of its words. Cut by a list
+    marker, quote or heading it was not caught before either.
+  - `exfiltration`: a verb, a secret term and a destination spread over several
+    paragraphs, list items, quotes, headings or table rows. A verb and a STRONG
+    secret (`.env`, `api key`, ...) on one line, and verb + secret + URL on one
+    line, are caught as before.
+  An author who wants to evade a phrase rule can now insert a blank line; the rules
+  were never topic-complete (see `okfy.injection`), and `okfy refine` remains the
+  owner's door for text that is legitimate. `tests/test_injection.py` pins the
+  boundary in both directions.
+
+#### Not changed, and not claimed
+
+- `okfy refine` still writes whatever parses and has a `type`: no injection or
+  secret scan, no archetype check, no lock, no base check, a plain `write_text`.
+  It is the owner's door and was left alone; the direct lane does not go through
+  it and does not inherit any of that.
+- `protocols/memory.md` does not mention the lane; the packaged `AGENTS.md` does
+  (see above), and an MCP agent also learns it from the tool description.
+- One commit per direct write. A write touching several concepts at once is still
+  a set of proposals.
+- A concept created directly is found by `okfy query` at once and is not in
+  `index.md` until the next `okfy package`, exactly like an accepted create.
+- **Retrieval is untouched.** None of `bm25.py`, `index.py`, `lexicon.py`, `query.py`
+  changed, so `retrieval_code_digest()` stays `1c923e5c…b021`, the value in the
+  retrieval note above, and no recorded eval run reads stale because of this change.
+- **The v0.30 pilot arm still has no write tool.** `okfy_write` is a seventh server
+  tool, and the client offers every registered tool unless a deny rule names it: the
+  contract test (`adapters/mcp/tests/test_client_contract.py`) found it offered to arm
+  OKFy. The runbook's `--disallowedTools` and settings `deny` list now name it beside
+  `okfy_propose`, the contract test calls it and sees it refused, and a pin in
+  `core/tests/test_doc_pins.py` fails if any server tool outside the five read tools
+  is missing from those lists. The v0.28 harness's preflight tolerates `okfy_write`
+  in the server's `tools/list` as an unoffered tool; the tools a run is offered are
+  unchanged.
+- The key is called `direct`, and `write_policy: direct` already exists (an embedded
+  bundle whose gate is the host repository's code review). The two are different
+  things: `write_policy: direct` opens every type, `direct: {types: [...]}` opens
+  some under `write_policy: proposals`. A `direct:` block next to
+  `write_policy: direct` is refused `E_DIRECT_POLICY`.
+- This adds `core/tests/test_direct_write.py` and
+  `adapters/mcp/tests/test_write_tool.py`. The public export ships no tests by
+  policy, so on the public repository CI's conditional unit step skips; here, in the source
+  tree, it runs the full core, mcp and normalize suites, these two files among them.
+
+### okfy-mcp over HTTP: one shared token, or identities from an OpenID issuer
+
+Contributed by @theaspirational (vsov/okfy#7), on top of the direct-write lane
+above. Nothing changes for stdio apart from the one schema detail named below, and no
+version is bumped here.
+
+- **`okfy-mcp serve <path> --http --token-file <file>`** serves the same seven
+  tools over streamable HTTP (`/mcp`, stateless, JSON responses) to many clients
+  at once, behind one bearer token. The token is read from a file, never a flag;
+  a missing, unreadable or short (< 32 characters) token refuses to start
+  (`E_MCP_HTTP_TOKEN`), and a request without the header is `401` with the
+  documented envelope (`E_MCP_UNAUTHORIZED`) before the MCP layer sees it. Plain
+  HTTP: loopback by default, TLS and anything finer than one token are a reverse
+  proxy's job (`--public-url` names the host the proxy serves). No `Session`
+  trace over HTTP: one process serves every client, so `observed` is absent
+  rather than attesting one client's reads to another's write.
+- **`--http --oidc-issuer <url> --oidc-audience <client id>`** is the other
+  access model (exclusive with `--token-file`): JWT access tokens from an OpenID
+  issuer (Authentik, Keycloak, ...), RS256 only, checked against the keys the
+  token's own `iss` publishes, `aud`, `exp`, `nbf`; discovery is read once at
+  start and a wrong issuer refuses to start (`E_MCP_OIDC_ISSUER`). Both flags
+  repeat. `okfy:read` is needed to call anything; `okfy:write` for the two
+  writing tools (`E_MCP_FORBIDDEN`, nothing written). `--oidc-write-group` makes
+  `okfy:write` count only for users whose `groups` claim lists the group;
+  `--oidc-read-group` closes the bundle to everyone else (`403`), so one issuer
+  can serve several bundles. The token names the **actor** of `okfy_write` and
+  `okfy_propose`: its `okfy_actor` claim when the issuer sets one, else `sub`
+  (`oidc:<sub>` when that is not already an OKF actor string); the tools' `actor`
+  parameter is now optional and ignored under a token. The first place an actor
+  string here is a verified identity, not a declaration. The MCP SDK's own
+  middleware answers 401/403 in the OAuth shape and publishes the
+  protected-resource metadata (`okfy:read`, `okfy:write`, `offline_access` as
+  `scopes_supported`) so a client can find the issuer.
+- **`--oidc-issuer-prefix <url>`** trusts every issuer whose URL lies under the
+  prefix as it turns up (the shape an Authentik gives MCP clients that registered
+  themselves): discovery on first sight, signature checked, **audience not**.
+  Residual risk, stated plainly: without the audience check nothing ties such a
+  token to this bundle except the scope names `okfy:read` / `okfy:write`. Anyone
+  the issuer lets register a client under that prefix and log a user in, and any
+  account holder of the issuer who can do so for themselves, obtains a token that
+  passes; it reads, and writes if the issuer grants the scope and no
+  `--oidc-write-group` applies. Use it with `--oidc-read-group`. The `okfy_actor`
+  and `sub` claims, `groups` and the scopes are the issuer's word: OKFy
+  verifies the signature, it does not audit the issuer.
+- **One change reaches stdio**: `actor` is no longer in the `required` list of the
+  `okfy_propose` and `okfy_write` tool schemas (the schema is one for every
+  transport). A call with no verified token and no actor is still refused,
+  `E_PROPOSAL_ACTOR`; the requirement moved from the schema to the call, and
+  `test_propose_memory.py` pins that. The tool descriptions say it.
+- **Not claimed.** The shared token file's permissions and the token's entropy
+  are not checked. There is no TLS, no rate limit and no clock-skew allowance
+  (`exp` is exact). Blocking discovery and key fetches run in worker threads with
+  a 10 s timeout; an issuer that answers slowly can still occupy them.
+
+#### Found and fixed while integrating it
+
+A read of the transport turned up seven defects, each pinned by a test that
+failed first (`adapters/mcp/tests/test_http_hardening.py`):
+
+- The prefix was compared as text, and a token's `iss` was fetched before any
+  signature check, so `<prefix>../x`, `%2e%2e`, `?` and `#` made the server send
+  a GET to the issuer's host at a path outside the prefix (blind: the issuer's
+  discovery document has to state itself as exactly that `iss` before anything
+  is trusted, and the host and scheme were always the prefix's). Only plain
+  path segments below the prefix are fetched now.
+- A failed discovery and a `kid` the issuer does not publish were fetched again
+  on every anonymous request; both are remembered for 60 s (at most 1024 entries).
+- A `groups` claim that was a string was matched as a substring (`owners`
+  matched `owners-admins`), and a non-list claim raised an unhandled error. A lone
+  string is one group now, anything else names none.
+- Under `--oidc-issuer`, a tool call that carried no verified token (the request
+  context lost) fell back to the client's own `actor` with no scope check. It is
+  refused now (`E_MCP_UNAUTHORIZED`).
+- A token identity must be one printable line of at most 255 characters
+  (`E_PROPOSAL_ACTOR`): the core's actor grammar let control characters through
+  and its `$` also matched before a trailing newline, and the string lands in a
+  ledger row and a commit message. The core now holds every actor to that bar
+  (see the next section), so the check here is the early, token-naming one.
+- The log line for a refused token now carries `repr()` of the reason, which
+  includes the caller's own `kid`; the shared token's check passes only
+  `lifespan` and checked `http` scopes (a websocket scope used to pass through).
+
+#### Dependencies and codes
+
+`adapters/mcp/pyproject.toml` declared only `okfy` and `mcp`, while the transport
+imports PyJWT (with its `crypto` extra), httpx, anyio, uvicorn, starlette and
+pydantic directly. They are declared now, with bounds that restate what `mcp`
+requires; `uv.lock` records the new edges and moves no version.
+`tests/test_dependencies.py` fails when an import under `src/` has no declared
+dependency, or a declared one no import.
+
+New codes: `E_MCP_HTTP_TOKEN`, `E_MCP_UNAUTHORIZED`, `E_MCP_OIDC_ISSUER`,
+`E_MCP_FORBIDDEN`; `E_PROPOSAL_ACTOR` is reused for a token identity that is not
+an OKF actor. The transport adds no tool: the pilot arm's deny list and its pin
+are unchanged and still hold, and the retrieval code digest stays `1c923e5c...b021`.
+
+### Commits name their writer: author and an `Okfy-Actor` trailer
+
+Contributed by @theaspirational (vsov/okfy#8). No version is bumped here.
+
+- **Every commit that writes a ledger row names its writer where git looks.**
+  The message gains an `Okfy-Actor: <actor>` trailer, read back with
+  `git log --format='%(trailers:key=Okfy-Actor,valueonly)'`. For any actor but
+  a `human:` one the commit's author is the actor too (`claude:vasyl
+  <claude-vasyl@okfy.invalid>`), so `git shortlog`, `git log --author` and
+  tools that group by author tell agents apart. A `human:` actor is the owner
+  working through their own git identity, which stays the author; the
+  committer is always whoever runs the process. Before, a hub serving many
+  agents committed everything under one name and the writer was only in
+  `meta/memory.jsonl` and `log.md`. Older commits are unchanged; the ledger
+  still covers them. In practice the agent is the author of the direct-write
+  lane's commits (`direct: ...`); `review accept`, `reject`, `dismiss` and
+  `refine` are the owner's verbs, carry the owner's `human:` role in the
+  trailer and keep the owner's git identity as author. Commits that write no
+  ledger row (`eval`, `ledger`, `dissent`, workspace release) carry neither.
+- **An actor is now one printable line of at most 255 characters, for every
+  caller (`E_PROPOSAL_ACTOR`, nothing written).** The actor string reaches a git
+  author name and a trailer, and the grammar alone did not hold it: `\S` lets
+  control characters through (a NUL made `git commit` fail after the concept file
+  and the ledger row were already written; an escape sequence went into the
+  message verbatim), and `$` also matched before a trailing newline. `ACTOR_RE`
+  is anchored with `\A...\Z` and `check_actor` refuses non-printable characters
+  and anything over 255. This tightens the stdio and shared-token transports as
+  well, where the actor is the client's own declaration. `_commit` repeats the
+  check as a backstop: an actor that reaches it any other way (a hand-edited
+  ledger row) has non-printable characters replaced by `?` and is cut at 255, so
+  it can start no second trailer and cannot break the commit. The author's email
+  is built from the actor's word characters only and always ends `@okfy.invalid`;
+  `<` and `>` are dropped from the author name.
+- **Nothing that reads history changes.** No check in the core reads a commit's
+  author or committer: the append-only ledger check compares file bytes, the
+  merge audit and the anchor checker read `%H` and blobs, and `git_env()` still
+  keeps `GIT_AUTHOR_*` / `GIT_COMMITTER_*` (the `--author` option outranks the
+  author variables; the committer stays the process's). The retrieval code digest
+  is unchanged (`1c923e5c...b021`).
+- **Not claimed.** An actor is still a declaration, so an author line is the
+  string the writer sent, not an authenticated identity (except under
+  `--oidc-issuer`, where it is the token's). A `human:` actor sent through the
+  direct-write lane is committed under the process's own git identity, as every
+  write was before.
+
 ## v0.29.0 — 2026-09-30
 
 An audit of v0.28 found two gaps in the shipped tool and four in a local experiment

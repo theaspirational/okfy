@@ -31,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--write-policy", dest="write_policy",
                    choices=["proposals", "direct"], default=None)
 
+    p = sub.add_parser("migrate", help="one-time bundle upgrades")
+    msub = p.add_subparsers(dest="mcmd", required=True)
+    m = msub.add_parser("ids", help="backfill bundle_uid and every missing "
+                                    "okf_id; a rerun is a no-op")
+    m.add_argument("bundle", type=Path)
+
     p = sub.add_parser("survey");   p.add_argument("corpus", type=Path)
 
     p = sub.add_parser("segment");  p.add_argument("bundle", type=Path)
@@ -326,6 +332,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("concept_id")
     p.add_argument("--from", dest="from_file", type=Path, required=True)
     p.add_argument("-m", "--message", default="")
+
+    p = sub.add_parser(
+        "write",
+        help="an AGENT's direct write, no review: only for a concept whose "
+             "type meta/purpose.md lists under direct.types (E_DIRECT_LANE / "
+             "E_DIRECT_DISABLED otherwise — use okfy propose), and only if "
+             "the file is still the bytes the author read (E_WRITE_BASE_MOVED)")
+    p.add_argument("bundle", type=Path)
+    p.add_argument("concept_id")
+    p.add_argument("--as", dest="actor", required=True,
+                   help="who is writing, as an OKF v0.2 actor: "
+                        "<producer>/<version> (claude-code/1.0) or <prefix>:<id>")
+    p.add_argument("--expect", required=True, metavar="SHA256",
+                   help="sha256 of the concept FILE as the author read it "
+                        "(`shasum -a 256 <file>`, or MCP okfy_show's sha256); "
+                        "the literal `absent` creates a concept that must not "
+                        "exist yet")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--from", dest="from_file", type=Path, default=None,
+                   help="full concept .md (frontmatter + body)")
+    g.add_argument("--patch-file", dest="patch_file", type=Path, default=None,
+                   help="JSON list of {old, new, count=1} hunks applied to "
+                        "the concept's current body")
+    p.add_argument("--note", default="")
 
     p = sub.add_parser(
         "dismiss",

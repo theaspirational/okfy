@@ -9,6 +9,8 @@ from urllib.parse import unquote
 
 from okfy import frontmatter
 from okfy.bundle import RESERVED_DIRS, Bundle
+from okfy.ids import carries_okf_id
+from okfy.init import manifest_digest
 from okfy.lexicon import row_problems
 from okfy.update import _embedded_prefix, _source_path
 from okfy.workspace import PROJECT_KEY_RE
@@ -267,6 +269,21 @@ META_REQUIRED = {"purpose": ["language", "write_policy", "test_queries"],
                  "corpus": ["corpus", "extracted_at"]}
 
 
+# RFC 3986 §3.1: an absolute URI starts with a scheme. Any scheme is external —
+# not only http(s)/mailto: an `other-tool://x/page.md` used to resolve as a
+# local path and warn W_DANGLING_LINK, and one without `.md` vanished silently.
+SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def is_external(target: str) -> bool:
+    return bool(SCHEME_RE.match(target))
+
+
+def external_links(body: str) -> list[str]:
+    """Every link target in `body` that carries a URI scheme, in order, once."""
+    return list(dict.fromkeys(t for t in LINK_RE.findall(body) if is_external(t)))
+
+
 def resolve_link(bundle: Bundle, concept_path, target: str) -> str | None:
     """Return concept id a local md link points to, or None for external/anchor-only.
 
@@ -276,7 +293,7 @@ def resolve_link(bundle: Bundle, concept_path, target: str) -> str | None:
     (`[^)\\s]+` can't capture either character). Decoded after the
     leading-`/` check, since that slash is never itself encoded."""
     target = target.split("#", 1)[0]
-    if not target or target.startswith(("http://", "https://", "mailto:")):
+    if not target or is_external(target):
         return None
     if not target.endswith(".md"):
         return None
@@ -301,12 +318,14 @@ def validate_integrity(bundle: Bundle, archetype=None, strict_sources=False,
             continue  # layer 1's problem
     _check_meta(bundle, r)
     _check_write_policy(bundle, r)
+    _check_direct(bundle, archetype, r, strict=strict_schema)
     _check_acceptance(bundle, r)
     _check_adversarial(bundle, concepts, r)
     _check_types(bundle, concepts, archetype, r, strict=strict_schema)
     _check_corpus_snapshot(bundle, r, strict=strict_sources)
     _check_execution(bundle, r, strict=strict_execution)
     _check_collisions(concepts, r)
+    _check_identity(bundle, concepts, r)
     _check_stale(concepts, r)
     _check_supersede(concepts, r)
     _check_supersede_cycles(concepts, r)
@@ -512,6 +531,87 @@ def _check_write_policy(bundle: Bundle, r: Report):
               "the gate without disabling the claim")
 
 
+# The `direct` block of meta/purpose.md: concept types an agent may write
+# without review while everything else stays behind `write_policy: proposals`.
+# Closed for the reason `acceptance` is: a misspelled key is a lane that
+# silently never opens, or one the owner believes is narrower than it is.
+DIRECT_KEYS = ("types",)
+
+
+def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str, str]]]:
+    """`(types, problems)` for a purpose's `direct` block — the ONE reader of
+    it, shared by `okfy validate` (`_check_direct`) and the writer
+    (`proposals.write_direct`), so the two cannot disagree about which types
+    the lane covers.
+
+    `types` is None when the block is absent or its `types` is malformed;
+    `problems` is `[(code, message)]`, each message ending in its way out. A
+    writer refuses on ANY problem: a trust boundary that is half-declared is
+    not open."""
+    if "direct" not in purpose_meta:
+        return None, []
+    direct = purpose_meta["direct"]
+    problems = []
+    policy = purpose_meta.get("write_policy")
+    if str(policy) != "proposals":
+        problems.append((
+            "E_DIRECT_POLICY",
+            f"`direct` is an exception list for write_policy: proposals, but "
+            f"write_policy is {policy!r}, so the block does nothing — remove "
+            "`direct`, or set write_policy: proposals"))
+    if not isinstance(direct, dict):
+        problems.append((
+            "E_DIRECT_KEY",
+            f"direct must be a mapping, got {type(direct).__name__} — write "
+            "it as `direct: {types: [<type>, ...]}`"))
+        return None, problems
+    unknown = sorted(str(k) for k in direct if k not in DIRECT_KEYS)
+    if unknown:
+        problems.append((
+            "E_DIRECT_KEY",
+            f"unknown direct key(s) {unknown} (known: {list(DIRECT_KEYS)}) — "
+            "remove them; an unrecognised key is a policy that silently does "
+            "nothing"))
+    types = direct.get("types")
+    if (not isinstance(types, list) or not types
+            or any(not isinstance(t, str) or not t.strip() for t in types)):
+        problems.append((
+            "E_DIRECT_TYPE",
+            f"direct.types must be a non-empty list of type names, got "
+            f"{types!r} — list the concept types agents may write without "
+            "review, or remove `direct`"))
+        return None, problems
+    return list(types), problems
+
+
+def _check_direct(bundle: Bundle, archetype, r: Report, strict: bool = False):
+    """The `direct` block is a trust boundary like `write_policy`, so its
+    shape is an error at every strictness level. Whether each listed type is
+    a DECLARED type follows `_check_types` exactly (same authority, same
+    levels): a lane for a type no concept can legally have never opens, and
+    the owner should hear that from validate, not find it in the review
+    queue."""
+    p = bundle.get("meta/purpose")
+    if p is None:
+        return                                   # _check_meta already reported it
+    types, problems = direct_policy(p.meta)
+    for code, message in problems:
+        r.add("error", code, p.id, message)
+    if not types or archetype is None:
+        return
+    allowed, source, declared = _declared_types(bundle, archetype)
+    if not allowed:
+        return
+    level, code = (("error", "E_DIRECT_TYPE") if declared or strict
+                   else ("warning", "W_DIRECT_TYPE"))
+    for t in types:
+        if t not in allowed:
+            r.add(level, code, p.id,
+                  f"direct.types entry {t!r} is not in {source}, so no concept "
+                  "can have it and the lane never opens for it — fix the "
+                  "name, or declare the type in meta/extraction-plan.md `types`")
+
+
 def _check_acceptance(bundle: Bundle, r: Report):
     """`acceptance` is the bundle's own release policy, so it is validated like
     one: closed key set, declared types, and `min_owner_pass` inside the range
@@ -606,6 +706,27 @@ def _check_adversarial(bundle: Bundle, concepts, r: Report):
             r.add("error", code, p.id, f"adversarial_queries[{i}]: {msg}")
 
 
+def _declared_types(bundle: Bundle, archetype) -> tuple[set, str, bool]:
+    """`(allowed, source, declared)`: the set of legal concept types, where it
+    comes from, and whether the bundle DECLARED it (plan `types`) rather than
+    inheriting the archetype's canonical list. One answer for `_check_types`
+    and `_check_direct`."""
+    plan = bundle.plan()
+    declared = (plan.meta.get("types") if plan else None)
+    # `/okfy:new` writes `types` as a mapping of name -> extraction rule, which
+    # is what every real bundle carries; a bare list is accepted too. Reading
+    # only one of the two shapes would silently fall through to canonical_types
+    # and ignore the declaration — the same fail-open this check exists to close.
+    allowed = ({str(t) for t in declared}
+               if isinstance(declared, (dict, list)) else None)
+    if allowed:
+        return allowed, "meta/extraction-plan.md `types`", True
+    if archetype is None:   # a caller with no archetype in hand (write_direct)
+        return set(), "no declared types", False
+    return (set(archetype.canonical_types or []),
+            f"archetype {archetype.name} canonical_types", False)
+
+
 def _check_types(bundle: Bundle, concepts, archetype, r: Report,
                  strict: bool = False):
     """Every concept type must be a declared type.
@@ -617,20 +738,10 @@ def _check_types(bundle: Bundle, concepts, archetype, r: Report,
     validated clean, contributed no required fields, and required no sections."""
     if archetype is None:
         return
-    plan = bundle.plan()
-    declared = (plan.meta.get("types") if plan else None)
-    # `/okfy:new` writes `types` as a mapping of name -> extraction rule, which
-    # is what every real bundle carries; a bare list is accepted too. Reading
-    # only one of the two shapes would silently fall through to canonical_types
-    # and ignore the declaration — the same fail-open this check exists to close.
-    allowed = ({str(t) for t in declared}
-               if isinstance(declared, (dict, list)) else None)
-    if allowed:
-        source = "meta/extraction-plan.md `types`"
+    allowed, source, declared = _declared_types(bundle, archetype)
+    if declared:
         level, code = "error", "E_UNKNOWN_TYPE"   # an explicit set is a contract
     else:
-        allowed = set(archetype.canonical_types or [])
-        source = f"archetype {archetype.name} canonical_types"
         # No declaration means the adaptation was never recorded. That is worth
         # an error only where the bundle claims to be releasable.
         level, code = ("error", "E_UNDECLARED_TYPE") if strict else \
@@ -662,6 +773,19 @@ def _check_corpus_snapshot(bundle: Bundle, r: Report, strict: bool = False):
         return
     if snap is None:
         return
+    want = snap.meta.get("manifest_digest")
+    mf = bundle.root / "meta" / "corpus-manifest.json"
+    if want is not None and mf.is_file():
+        try:
+            got = manifest_digest(json.loads(mf.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            got = None
+        if got != want:
+            r.add("error", "E_MANIFEST_DIGEST", "meta/corpus.md",
+                  "manifest_digest does not match meta/corpus-manifest.json — "
+                  "the snapshot no longer describes the bytes it read (the "
+                  "manifest was edited, or written by something other than "
+                  "`okfy snapshot`); re-run `okfy snapshot`")
     sha = str(snap.meta.get("git_sha") or "").strip()
     corpus = Path(str(snap.meta.get("corpus") or ""))
     if not sha or not corpus.is_dir() or not (corpus / ".git").exists():
@@ -1904,6 +2028,48 @@ def _check_collisions(concepts, r: Report):
         if key in seen:
             r.add("error", "E_ID_COLLISION", c.id, f"case-insensitive collision with {seen[key]}")
         seen[key] = c.id
+
+
+def _check_identity(bundle: Bundle, concepts, r: Report):
+    """`bundle_uid` and `okf_id` (okfy.ids). Absent is a warning, so a bundle
+    made before ids existed stays green until `okfy migrate ids` backfills
+    them. A present but non-string or blank value, or two pages sharing one
+    `okf_id` (a page copied instead of moved), is an error: an identity that
+    names nothing, or two things, is worse than none."""
+    try:
+        purpose = bundle.get("meta/purpose")
+    except frontmatter.FrontmatterError:
+        purpose = None                       # layer 1's problem
+    if purpose is not None:
+        uid = purpose.meta.get("bundle_uid")
+        if "bundle_uid" not in purpose.meta:
+            r.add("warning", "W_BUNDLE_UID_MISSING", purpose.id,
+                  "no bundle_uid — run `okfy migrate ids`")
+        elif not isinstance(uid, str) or not uid.strip():
+            r.add("error", "E_BUNDLE_UID", purpose.id,
+                  f"bundle_uid must be a non-empty string, got {uid!r}")
+    missing, seen = [], {}
+    for c in concepts:
+        if not carries_okf_id(c.id):
+            continue
+        if "okf_id" not in c.meta:
+            missing.append(c.id)
+            continue
+        v = c.meta["okf_id"]
+        if not isinstance(v, str) or not v.strip():
+            r.add("error", "E_OKF_ID", c.id,
+                  f"okf_id must be a non-empty string, got {v!r}")
+        elif v in seen:
+            r.add("error", "E_OKF_ID_DUPLICATE", c.id,
+                  f"okf_id {v} is also carried by {seen[v]} — a page copied "
+                  "rather than moved; give the copy a fresh id (delete its "
+                  "okf_id line, then `okfy migrate ids`)")
+        else:
+            seen[v] = c.id
+    if missing:
+        r.add("warning", "W_OKF_ID_MISSING", missing[0],
+              f"{len(missing)} page(s) without okf_id (e.g. "
+              f"{', '.join(missing[:3])}) — run `okfy migrate ids`")
 
 
 def _check_links(bundle, concepts, r: Report) -> set[str]:

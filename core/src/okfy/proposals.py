@@ -8,22 +8,27 @@ import datetime
 import fcntl
 import hashlib
 import json
+import os
 import re
+import stat
 import unicodedata
 from pathlib import Path
 
 from okfy import frontmatter, memory
-from okfy.actor import check_actor, check_owner_actor, owner_actor, utc_now
+from okfy.actor import (MAX_ACTOR_CHARS, check_actor, check_owner_actor, owner_actor,
+                        utc_now)
 from okfy.bm25 import tokenize
 from okfy.bundle import DRAFT_DIR, PROPOSAL_DIR, RESERVED_DIRS, SKIP_DIRS, Bundle, Concept
 from okfy.cluster import _alias_keys, _jaccard, _title_key
 from okfy.gitenv import run_git
+from okfy.ids import IDENTITY_KEYS, carries_okf_id, new_id as mint_id
 from okfy.package import append_log
 from okfy.sourcemap import cited_span
 from okfy.transcript_lint import _SEGMENT
-from okfy.validate import (LINK_RE, Report, _check_archetype, _index_mode, _norm,
-                           _shard_files, _source_checker, archetype_applies,
-                           ledger_prefix_check, resolve_link, review_due_date)
+from okfy.validate import (LINK_RE, Report, _check_archetype, _declared_types,
+                           _index_mode, _norm, _shard_files, _source_checker,
+                           archetype_applies, direct_policy, ledger_prefix_check,
+                           resolve_link, review_due_date)
 
 ACTIONS = {"create", "update", "delete", "supersede", "flag", "gap"}
 # v0.24 (a): a flag's --type — closed, like ACTIONS itself: an unrecognised
@@ -51,7 +56,22 @@ W_DISTINCT_OVERLAP = "W_DISTINCT_ALIAS_OVERLAP"
 # v0.24 lifecycle actions
 E_DELETE_EXPECTED = "E_DELETE_EXPECTED"
 E_PROPOSAL_LANE = "E_PROPOSAL_LANE"
-ORIGINS = ("proposal-accept", "owner-refine", "revert")
+ORIGINS = ("proposal-accept", "owner-refine", "revert", "agent-direct")
+
+# The direct-write lane (`write_direct`): concept types `meta/purpose.md`
+# lists under `direct.types` are written by an agent without review, checked
+# against the sha256 the agent read. Everything else stays a proposal.
+E_DIRECT_DISABLED = "E_DIRECT_DISABLED"
+E_DIRECT_LANE = "E_DIRECT_LANE"
+E_DIRECT_TARGET = "E_DIRECT_TARGET"
+E_DIRECT_RETYPE = "E_DIRECT_RETYPE"
+E_DIRECT_OWNER_FIELD = "E_DIRECT_OWNER_FIELD"
+E_DIRECT_INVALID = "E_DIRECT_INVALID"
+E_WRITE_CONTENT = "E_WRITE_CONTENT"
+E_WRITE_BASE_MOVED = "E_WRITE_BASE_MOVED"
+# What `expect_sha256` says when the author read that there is NO such
+# concept: the create half of the same optimistic check.
+ABSENT = "absent"
 
 # v0.24 intake kinds: flag, gap, patch
 E_PROPOSAL_GAP_CAP = "E_PROPOSAL_GAP_CAP"
@@ -452,7 +472,11 @@ def _collect_scan_strings(meta: dict, body: str, *, query: str | None = None,
     return out
 
 
-def _commit(bundle: Bundle, paths: list[str], message: str) -> None:
+ACTOR_TRAILER = "Okfy-Actor"
+
+
+def _commit(bundle: Bundle, paths: list[str], message: str,
+            actor: str | None = None) -> None:
     """Sanctioned mutator commit: --no-verify past the policy hook. Silently
     skipped when the bundle has no own git repo (embed bundles ride the corpus
     PR flow instead). Paths are staged one by one with check=False: a deleted
@@ -469,7 +493,15 @@ def _commit(bundle: Bundle, paths: list[str], message: str) -> None:
     commit ever happens: `git commit` with no pathspec commits the WHOLE
     index, so this must run before staging, not merely before committing —
     a rewrite staged by something else ahead of this call would otherwise
-    ride into HEAD even though this call never re-added it itself."""
+    ride into HEAD even though this call never re-added it itself.
+
+    `actor` is the ledger row's actor. It goes into git's own fields, so
+    `git log`, `git shortlog` and any tool that groups by author tell writers
+    apart without parsing a message: an `Okfy-Actor:` trailer (read back with
+    `git log --format='%(trailers:key=Okfy-Actor,valueonly)'`), and, for any
+    actor but a `human:` one, the commit's author. A `human:` actor is the
+    owner acting through their own git identity, which stays the author; the
+    committer is always whoever runs the process."""
     if not (bundle.root / ".git").exists():
         return
     from okfy.ledger import LEDGER
@@ -486,7 +518,22 @@ def _commit(bundle: Bundle, paths: list[str], message: str) -> None:
                      capture_output=True)
     if staged.returncode == 0:
         return
-    run_git(bundle.root, "commit", "-q", "--no-verify", "-m", message,
+    author = []
+    if actor:
+        # `check_actor` already refused anything but one printable line; this
+        # is the backstop for an actor that reached here another way (a
+        # hand-edited ledger row). A newline would start a second trailer, a
+        # NUL would make `git commit` fail after the files were written.
+        actor = "".join(c if c.isprintable() and not c.isspace() else "?"
+                        for c in actor)[:MAX_ACTOR_CHARS]
+        message = f"{message}\n\n{ACTOR_TRAILER}: {actor}"
+        if not actor.startswith("human:"):
+            # The email is built from word characters only, so the actor can
+            # never choose it; `<` and `>` would end the name early.
+            slug = re.sub(r"[^\w.-]+", "-", actor).strip("-") or "agent"
+            name = re.sub(r"[<>]", "", actor)
+            author = [f"--author={name} <{slug}@okfy.invalid>"]
+    run_git(bundle.root, "commit", "-q", "--no-verify", *author, "-m", message,
            check=True, capture_output=True)
 
 
@@ -1302,33 +1349,12 @@ def _check_proposal_sources(bundle: Bundle, meta: dict) -> str | None:
     return "checked"
 
 
-def _gate(bundle: Bundle, meta: dict, body: str, target, action: str, reopen,
-          distinct_from: dict[str, str] | None = None, *, actor: str | None = None,
-          flag_type: str | None = None, query: str | None = None,
-          sibling_titles: list[str] | None = None, note: str = "",
-          reverts: str | None = None, new_id: str | None = None,
-          hunks: list[dict] | None = None, supersedes: str | None = None,
-          sibling_gap_open_count: int = 0) -> tuple[list[str], str | None]:
-    """Refusals, cheapest first, each naming its way out — then one warning
-    (W_PROPOSAL_NEAR) that is never a refusal. Returns `(near, sources_state)`:
-    the near-duplicate ids found for a create (empty otherwise), and the
-    `sources:` check outcome (`None` when nothing to check) — both for
-    `propose` to persist."""
+def _refuse_scan(label: str, strings: list[str]) -> None:
+    """The injection and secret scans every agent-written text passes before
+    it is persisted — a proposal (`_gate`) or a direct write (`write_direct`).
+    One function so the two lanes cannot scan differently."""
     from okfy import secrets
     from okfy.injection import scan_values
-    label = f"{PROPOSAL_DIR}/{target or meta.get('title', '')}"
-    # v0.24: every author-controlled string that could end up PERSISTED
-    # anywhere (the proposal file, meta/memory.jsonl, or log.md at accept) —
-    # every frontmatter VALUE walked recursively (never the YAML dump, which
-    # folds long scalars and would hide a phrase split by the fold), the
-    # body, and every other free-text field: note, reopen, distinct_from
-    # reasons, reverts, query, target/new_id, a patch hunk's `new`. One
-    # collection point, one scan call — every action (create/update/delete/
-    # supersede/flag/gap/patch), --batch, and the MCP path all share it.
-    strings = _collect_scan_strings(meta, body, query=query, note=note,
-                                    reopen=reopen, distinct_from=distinct_from,
-                                    reverts=reverts, target=target, new_id=new_id,
-                                    patch_hunks=hunks)
     found = scan_values(label, strings)
     if found:
         f = found[0]
@@ -1345,6 +1371,34 @@ def _gate(bundle: Bundle, meta: dict, body: str, target, action: str, reopen,
             f"at line {line}. Memory is committed to git and re-sent every turn; "
             "remove the value and refer to where it lives (env var name, vault "
             "path), then propose again")
+
+
+def _gate(bundle: Bundle, meta: dict, body: str, target, action: str, reopen,
+          distinct_from: dict[str, str] | None = None, *, actor: str | None = None,
+          flag_type: str | None = None, query: str | None = None,
+          sibling_titles: list[str] | None = None, note: str = "",
+          reverts: str | None = None, new_id: str | None = None,
+          hunks: list[dict] | None = None, supersedes: str | None = None,
+          sibling_gap_open_count: int = 0) -> tuple[list[str], str | None]:
+    """Refusals, cheapest first, each naming its way out — then one warning
+    (W_PROPOSAL_NEAR) that is never a refusal. Returns `(near, sources_state)`:
+    the near-duplicate ids found for a create (empty otherwise), and the
+    `sources:` check outcome (`None` when nothing to check) — both for
+    `propose` to persist."""
+    label = f"{PROPOSAL_DIR}/{target or meta.get('title', '')}"
+    # v0.24: every author-controlled string that could end up PERSISTED
+    # anywhere (the proposal file, meta/memory.jsonl, or log.md at accept) —
+    # every frontmatter VALUE walked recursively (never the YAML dump, which
+    # folds long scalars and would hide a phrase split by the fold), the
+    # body, and every other free-text field: note, reopen, distinct_from
+    # reasons, reverts, query, target/new_id, a patch hunk's `new`. One
+    # collection point, one scan call — every action (create/update/delete/
+    # supersede/flag/gap/patch), --batch, and the MCP path all share it.
+    strings = _collect_scan_strings(meta, body, query=query, note=note,
+                                    reopen=reopen, distinct_from=distinct_from,
+                                    reverts=reverts, target=target, new_id=new_id,
+                                    patch_hunks=hunks)
+    _refuse_scan(label, strings)
 
     events, problems = memory.events(bundle)
     if problems:
@@ -1788,7 +1842,7 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
         append_log(bundle, f"review: accept flag {target or env.get('query', '')} "
                            f"({env.get('note', '')}){unbased}")
         _commit(bundle, [f"{proposal_id}.md", "log.md", memory.MEMORY_FILE],
-                f"review: accept flag {proposal_id}")
+                f"review: accept flag {proposal_id}", actor=owner)
         return target or ""
 
     if action == "gap":
@@ -1842,7 +1896,7 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
         append_log(bundle, f"review: accept gap {term!r} ({env.get('note', '')}){unbased}")
         _commit(bundle, ["meta/lexicon.md", f"{proposal_id}.md", "log.md",
                         memory.MEMORY_FILE],
-                f"review: accept gap {term!r}")
+                f"review: accept gap {term!r}", actor=owner)
         return "meta/lexicon"
 
     if action == "delete":
@@ -1870,7 +1924,7 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
                            f"{unbased}")
         _commit(bundle,
                 [f"{target}.md", f"{proposal_id}.md", "log.md", memory.MEMORY_FILE],
-                f"review: accept delete {target}")
+                f"review: accept delete {target}", actor=owner)
         return target
 
     if action == "supersede":
@@ -1889,6 +1943,8 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
         if not str(new_meta.get("type", "")).strip():
             raise ValueError("proposed concept has no type")
         new_meta["supersedes"] = target
+        new_meta["okf_id"] = mint_id()           # a new page; the old keeps its own
+        new_meta.pop("bundle_uid", None)         # purpose.md's alone
         if archetype is not None and archetype_applies(new_id):
             r = Report()
             probe = Concept(new_id, bundle.root / f"{new_id}.md", new_meta, c.body)
@@ -1934,7 +1990,7 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
         # regenerated by `okfy package`, never written by review accept.
         _commit(bundle, [f"{target}.md", f"{new_id}.md", f"{proposal_id}.md",
                         "log.md", memory.MEMORY_FILE],
-                f"review: accept supersede {target} -> {new_id}")
+                f"review: accept supersede {target} -> {new_id}", actor=entry["by"])
         return new_id
 
     if action == "update" and existing is None:
@@ -1970,6 +2026,16 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
             meta["generated"] = existing.meta["generated"]
         if isinstance(existing.meta.get("verified"), list):
             prior = list(existing.meta["verified"])
+    # Identity is the core's, never the proposal's: an update keeps the page's
+    # own okf_id — and purpose.md its bundle_uid — whatever the proposed text
+    # carries (a rewrite that dropped or copied one must not re-identify the
+    # page or the bundle), and a create gets a fresh okf_id.
+    for key in IDENTITY_KEYS:
+        meta.pop(key, None)
+        if existing is not None and key in existing.meta:
+            meta[key] = existing.meta[key]
+    if existing is None and carries_okf_id(target):
+        meta["okf_id"] = mint_id()
     entry = {"by": owner, "at": utc_now(),
              "content": content_sha256(c.body)}
     if proposed_by:
@@ -1988,7 +2054,7 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
                        f"{unbased}")
     _commit(bundle,
             [f"{target}.md", f"{proposal_id}.md", "log.md", memory.MEMORY_FILE],
-            f"review: accept {action} {target}")
+            f"review: accept {action} {target}", actor=entry["by"])
     return target
 
 
@@ -2033,7 +2099,7 @@ def _reject(bundle: Bundle, proposal_id: str, reason: str = "", *,
                   match_sha256=reject_mhash, channel=channel)
     append_log(bundle, f"review: reject {proposal_id} ({reason})")
     _commit(bundle, [f"{proposal_id}.md", "log.md", memory.MEMORY_FILE],
-            f"review: reject {proposal_id}")
+            f"review: reject {proposal_id}", actor=owner)
 
 
 def dismiss(bundle: Bundle, concept_id: str, reason: str) -> None:
@@ -2060,10 +2126,7 @@ def dismiss(bundle: Bundle, concept_id: str, reason: str) -> None:
         raise KeyError(f"concept not found: {concept_id}")
     if not reason.strip():
         raise ValueError("dismiss requires a reason — it is a reviewed decision")
-    latest = None
-    for row in memory.events(bundle)[0]:
-        if row.get("target") == concept_id:
-            latest = row
+    latest = memory.latest_decisions(bundle, {concept_id}).get(concept_id)
     if latest is None or latest["event"] != "reject":
         seen = "no memory.jsonl event" if latest is None else f"a {latest['event']!r} event"
         raise ValueError(
@@ -2081,7 +2144,7 @@ def dismiss(bundle: Bundle, concept_id: str, reason: str) -> None:
                   target=concept_id, action=latest["action"],
                   content_sha256=latest["content_sha256"], reason=reason)
     append_log(bundle, f"dismiss: {concept_id} — {reason}")
-    _commit(bundle, ["log.md", memory.MEMORY_FILE], f"dismiss: {concept_id}")
+    _commit(bundle, ["log.md", memory.MEMORY_FILE], f"dismiss: {concept_id}", actor=owner)
 
 
 def refine(bundle: Bundle, concept_id: str, text: str, message: str = "") -> None:
@@ -2098,6 +2161,12 @@ def refine(bundle: Bundle, concept_id: str, text: str, message: str = "") -> Non
     meta, body = frontmatter.parse(text)            # raises FrontmatterError
     if not str(meta.get("type", "")).strip():
         raise ValueError("refined concept has no type")
+    for key in IDENTITY_KEYS:
+        if meta.get(key) != existing.meta.get(key):
+            raise ValueError(
+                f"refined text changes {key} ({existing.meta.get(key)!r} -> "
+                f"{meta.get(key)!r}) — an id is never recomputed; keep the "
+                f"{key} line as it is")
     # v0.26 audit A5: checked at entry, before the concept file is written
     # or `memory.record` appends the `accept`/owner-refine row — see
     # `_accept`'s matching comment and `_refuse_if_ledger_rewritten`'s
@@ -2109,7 +2178,297 @@ def refine(bundle: Bundle, concept_id: str, text: str, message: str = "") -> Non
                   origin="owner-refine")
     append_log(bundle, f"refine: {concept_id}" + (f" — {message}" if message else ""))
     _commit(bundle, [f"{concept_id}.md", "log.md", memory.MEMORY_FILE],
-            message or f"refine: {concept_id}")
+            message or f"refine: {concept_id}", actor=owner_actor(bundle))
+
+
+class WriteBaseMoved(ValueError):
+    """`E_WRITE_BASE_MOVED`, carrying the sha256 the file has NOW (or
+    `ABSENT`) so an adapter can hand it back as data."""
+
+    def __init__(self, message: str, current_sha256: str):
+        super().__init__(message)
+        self.current_sha256 = current_sha256
+
+
+def _base_capture(bundle: Bundle, concept_id: str) -> tuple[Path, bytes | None, str]:
+    """`(path, raw bytes or None, sha256 or ABSENT)` of a concept file, read
+    ONCE: the digest compared against `expect_sha256` and the text a write is
+    built on must be two views of the same capture, never two reads."""
+    path = bundle.root / f"{concept_id}.md"
+    raw = path.read_bytes() if path.is_file() else None
+    return path, raw, (hashlib.sha256(raw).hexdigest() if raw is not None else ABSENT)
+
+
+def _text(raw: bytes) -> str:
+    """A concept file's bytes as the newline-normalised text `frontmatter.
+    parse` needs (the MCP adapter's `_read_concept` gives the same view)."""
+    return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _refuse_base_moved(concept_id: str, expect_sha256: str, current: str) -> None:
+    """The optimistic check: the file must still be the bytes the author read
+    (sha256 of the raw file, the digest `okfy_show` returns), or still absent
+    for a create. Call it under `review_lock`, in the same step as the write."""
+    if current == expect_sha256:
+        return
+    now = "does not exist" if current == ABSENT else f"is now {current}"
+    was = "no such concept" if expect_sha256 == ABSENT else expect_sha256
+    raise WriteBaseMoved(
+        f"{E_WRITE_BASE_MOVED}: {concept_id} {now}, and this write was made "
+        f"against {was} — writing would erase a change the author never saw "
+        "— read the concept again and write against the sha256 that read "
+        "returns", current)
+
+
+def propose_checked(bundle: Bundle, meta: dict, body: str, target: str,
+                    action: str = "update", note: str = "", *,
+                    expect_sha256: str, **kw) -> Path:
+    """`propose` for an author who says which bytes they read: refused with
+    `E_WRITE_BASE_MOVED` unless `target` is still at `expect_sha256` (`ABSENT`
+    for a create). Check and filing share one `review_lock`, so the
+    `base_sha256` the proposal records is the base the author actually saw."""
+    with review_lock(bundle):
+        _path, raw, current = _base_capture(bundle, target)
+        _refuse_base_moved(target, expect_sha256, current)
+        # The author was told to send owner fields back as they read them. A
+        # `verified` equal to the base's own is that, not a forged one, and
+        # accept re-derives it from the target regardless — so it is dropped
+        # here, as the patch path already drops it. Anything else still meets
+        # the forged-verification refusal in `_prepare_proposal`.
+        if raw is not None and "verified" in meta:
+            try:
+                inherited = frontmatter.parse(_text(raw))[0].get("verified")
+            except frontmatter.FrontmatterError:
+                inherited = None
+            if inherited is not None and meta["verified"] == inherited:
+                meta = {k: v for k, v in meta.items() if k != "verified"}
+        return _materialize_proposal(bundle, _prepare_proposal(
+            bundle, meta, body, target, action, note, **kw))
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Whole file or nothing: a crash mid-write must not leave half a concept
+    for `okfy_fresh` to hash as a version. The temp name is not `*.md`, so
+    concept discovery never sees one a crash left behind."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if path.exists():
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def write_direct(bundle: Bundle, concept_id: str, *, actor: str, expect_sha256: str,
+                 text: str | None = None, patch: list[dict] | None = None,
+                 note: str = "", observed: dict | None = None,
+                 archetype=None) -> dict:
+    """An AGENT's write that lands without review — only for a concept whose
+    type `meta/purpose.md` lists under `direct.types`. Everything else is
+    refused with `E_DIRECT_LANE` (or `E_DIRECT_DISABLED` when the bundle
+    declares no lane) and belongs in `propose`.
+
+    Concurrency is optimistic, with no new lock: `expect_sha256` is the sha256
+    of the file the author read (what `okfy_show` returns), or `ABSENT` to
+    create a concept that must not exist yet. The check and the write happen
+    under `review_lock`, so of two writers holding the same sha256 exactly one
+    lands and the other gets `E_WRITE_BASE_MOVED`. A hand edit takes no lock:
+    one that lands before the file is read here is refused the same way, one
+    that lands in the instant between that read and the rename is lost.
+
+    `text` (a whole concept, frontmatter + body) or `patch` (`[{old, new,
+    count=1}]` against the current body), never both. The lane is decided by
+    the concept's CURRENT type for an update and its proposed type for a
+    create; a write that would change the type is `E_DIRECT_RETYPE`. The
+    fields an owner decision writes (`verified`, `generated`, the stale
+    fields, `supersedes`/`superseded_by`) are carried over from the file and
+    may not be changed here (`E_DIRECT_OWNER_FIELD`); a create's `generated`
+    is this call's `actor`.
+
+    What a proposal would be refused for at filing or at accept is refused
+    here too, by the same functions: the injection and secret scans
+    (`_refuse_scan`), `sources:` outside the corpus, and the archetype schema
+    (`E_DIRECT_INVALID`). The rejected-content and duplicate-title gates are
+    about the review queue and do not run. `archetype` may be a zero-argument
+    callable: it is called only once a write has reached the schema check, so
+    a caller that routes on `E_DIRECT_LANE` never loads a schema it would not
+    use.
+
+    Recorded like any other content write: an `accept` row with
+    `proposal: null`, `origin: agent-direct` and the AGENT as actor, a log
+    line, one commit. `observed` is the MCP adapter's session trace; its
+    counters (not its read set) go on the ledger row.
+
+    Returns `{persisted, channel: "direct", id, action, sha256, origin}` —
+    `sha256` is the new file's, so a second write needs no re-read."""
+    actor = check_actor(actor)
+    if (text is None) == (patch is None):
+        raise ValueError(
+            f"{E_WRITE_CONTENT}: a write needs exactly one of content (the "
+            "whole concept) and patch (hunks against its current body) — "
+            "pass one of them")
+    hunks = _validate_patch(patch) if patch is not None else None
+    create = expect_sha256 == ABSENT
+    if create:
+        _validate_write_id(bundle, concept_id, flag="target")
+        if hunks is not None:
+            raise ValueError(
+                f"{E_DIRECT_TARGET}: a patch edits an existing concept's body, "
+                f"and expect_sha256={ABSENT!r} says {concept_id} does not "
+                "exist — pass content to create it")
+    with review_lock(bundle):
+        return _write_direct(bundle, concept_id, actor, expect_sha256, text, hunks,
+                             note, observed, archetype, create)
+
+
+def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: str,
+                  text: str | None, hunks: list[dict] | None, note: str,
+                  observed: dict | None, archetype, create: bool) -> dict:
+    propose_instead = "file a proposal instead (okfy propose / okfy_propose)"
+    types, problems = direct_policy(bundle.purpose())
+    if problems:
+        raise ValueError(f"{problems[0][0]}: meta/purpose.md: {problems[0][1]}")
+    if types is None:
+        raise ValueError(
+            f"{E_DIRECT_DISABLED}: this bundle lists no `direct.types` in "
+            f"meta/purpose.md, so nothing lands without review — {propose_instead}")
+    if str(concept_id).split("/")[0] in RESERVED_ID_ROOTS:
+        raise ValueError(
+            f"{E_DIRECT_LANE}: {concept_id} is under a reserved directory, "
+            f"which is never written directly — {propose_instead}")
+
+    path, raw, current = _base_capture(bundle, concept_id)
+    before: dict = {}
+    before_body = ""
+    if not create:
+        if raw is None:
+            # Read, then deleted (or never there): the base is ABSENT now.
+            _refuse_base_moved(concept_id, expect_sha256, current)
+        resolved = path.resolve()
+        if not resolved.is_relative_to(bundle.root) \
+                or bundle.concept_id(resolved) != concept_id:
+            raise ValueError(
+                f"{E_DIRECT_TARGET}: {concept_id!r} is not a concept's own id "
+                "(it resolves to another path) — use the id the concept was "
+                "read under")
+        before, before_body = frontmatter.parse(_text(raw))
+        if before.get("type") not in types:
+            raise ValueError(
+                f"{E_DIRECT_LANE}: {concept_id} has type {before.get('type')!r}, "
+                f"which is not in direct.types {types} — {propose_instead}")
+    _refuse_base_moved(concept_id, expect_sha256, current)
+
+    if hunks is not None:
+        meta, body = dict(before), _apply_patch(before_body, hunks)
+    else:
+        try:
+            meta, body = frontmatter.parse(text)
+        except frontmatter.FrontmatterError as e:
+            if str(e) == "missing frontmatter closing '---'":
+                raise ValueError(
+                    f"E_PROPOSAL_TRUNCATED: {e} — the content was cut off "
+                    "before the frontmatter closed — resend the whole text, "
+                    "or send the change as a patch") from e
+            raise ValueError(
+                f"E_FRONTMATTER: {e} — fix the YAML frontmatter block") from e
+    if create:
+        # The same contract validate enforces as E_UNKNOWN_TYPE, checked before
+        # the write instead of after: when the plan declares `types`, a concept
+        # of any other type is an error the moment it lands. Refusing it here
+        # beats the alternative — the lane check below would send it to a
+        # proposal, invisible to search, that validate rejects once accepted.
+        allowed, source, declared = _declared_types(bundle, None)
+        if declared and str(meta.get("type")) not in allowed:
+            raise ValueError(
+                f"E_UNKNOWN_TYPE: the new concept has type {meta.get('type')!r}, "
+                f"which is not in {source} {sorted(allowed)} — use one of those "
+                "(a new kind of thing is usually a tag on an existing type), or "
+                "ask the owner to declare the type in meta/extraction-plan.md")
+        if meta.get("type") not in types:
+            raise ValueError(
+                f"{E_DIRECT_LANE}: the new concept has type {meta.get('type')!r}, "
+                f"which is not in direct.types {types} — {propose_instead}")
+    if not create and meta.get("type") != before.get("type"):
+        raise ValueError(
+            f"{E_DIRECT_RETYPE}: this write changes {concept_id}'s type from "
+            f"{before.get('type')!r} to {meta.get('type')!r}, which would move "
+            f"it across the review boundary — keep the type, or {propose_instead}")
+    meta.pop("proposal", None)
+    for key in ("verified", "generated", "supersedes", "superseded_by", *STALE_FIELDS):
+        if key == "generated" and create:
+            continue
+        if key in meta and (key not in before or meta[key] != before[key]):
+            raise ValueError(
+                f"{E_DIRECT_OWNER_FIELD}: `{key}` records an owner decision "
+                "and a direct write may not set or change it — leave it "
+                f"exactly as the concept has it, or {propose_instead}")
+        if key in before:
+            meta[key] = before[key]
+    if create:
+        meta["generated"] = {"by": actor, "at": utc_now()}
+    # Identity is the core's, never the writer's (as in `_accept`): an update
+    # keeps the page's own okf_id whatever the text carries (a rewrite that
+    # dropped, forged or copied one must not re-identify the page), and a
+    # create gets a fresh one. `meta/` is never in the lane, so bundle_uid is
+    # never reached here.
+    for key in IDENTITY_KEYS:
+        if key in before:
+            meta[key] = before[key]
+        else:
+            meta.pop(key, None)
+    if create and carries_okf_id(concept_id):
+        meta["okf_id"] = mint_id()
+
+    _refuse_scan(concept_id, _collect_scan_strings(
+        meta, body, note=note, target=concept_id, patch_hunks=hunks))
+    _check_proposal_sources(bundle, meta)
+    if callable(archetype):
+        archetype = archetype()
+    if archetype is not None and archetype_applies(concept_id):
+        r = Report()
+        _check_archetype(Concept(concept_id, path, meta, body), archetype, r)
+        if not r.ok:
+            raise ValueError(
+                f"{E_DIRECT_INVALID}: "
+                + "; ".join(f"{f.code}: {f.message}" for f in r.errors)
+                + f" — fix the concept and write again, or {propose_instead}")
+    _refuse_if_ledger_rewritten(bundle, memory.MEMORY_FILE)
+
+    data = frontmatter.serialize(meta, body).encode("utf-8")
+    action = "create" if create else "update"
+    _assert_write_inside_bundle(bundle, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, data)
+    try:
+        memory.record(
+            bundle, "accept", actor=actor, proposal=None, target=concept_id,
+            action=action, content_sha256=content_sha256(body),
+            base_sha256=None if create else expect_sha256, origin="agent-direct",
+            observed={k: observed[k] for k in
+                      ("by", "queries", "target_shown", "base_shown")
+                      if k in observed} if observed else None)
+    except Exception:
+        # The ledger cannot be un-written, so it goes last; a write it could
+        # not record is taken back rather than left as an unrecorded change.
+        if raw is None:
+            path.unlink(missing_ok=True)
+        else:
+            _atomic_write(path, raw)
+        raise
+    # One line, whatever the note held: log.md is read by its headings.
+    said = " ".join(str(note).split())
+    append_log(bundle, f"direct: {action} {concept_id} by {actor}"
+                       + (f" — {said}" if said else ""))
+    _commit(bundle, [f"{concept_id}.md", "log.md", memory.MEMORY_FILE],
+            f"direct: {action} {concept_id}", actor=actor)
+    return {"persisted": True, "channel": "direct", "id": concept_id,
+            "action": action, "sha256": hashlib.sha256(data).hexdigest(),
+            "origin": "agent-direct"}
 
 
 STALE_FIELDS = ("stale", "stale_reason", "stale_since")

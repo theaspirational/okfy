@@ -9,9 +9,9 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from okfy import frontmatter, memory
-from okfy.bundle import Bundle
+from okfy.bundle import Bundle, drop_bundle_paths
 from okfy.gitenv import run_git
-from okfy.init import _corpus_git_sha, _manifest
+from okfy.init import _corpus_git_sha, _manifest, manifest_digest
 
 # `okfy.sourcemap` imports `ANCHOR_LINE_RE`/`heading_spans` from `okfy.validate`,
 # and `okfy.validate` imports `_embedded_prefix`/`_source_path` from THIS module
@@ -219,6 +219,9 @@ def corpus_diff(bundle: Bundle, *, rev: str | None = _UNSET) -> dict:
                 removed.append(parts[1])
             else:                               # M, T, ...
                 changed.append(parts[1])
+        # Any other bundle embedded in the corpus is not corpus either.
+        changed, added, removed = (drop_bundle_paths(corpus, ps)
+                                   for ps in (changed, added, removed))
         return {"mode": "git", "old": old_sha, "new": new_sha,
                 "changed": sorted(p for p in changed if keep(p)),
                 "added": sorted(p for p in added if keep(p)),
@@ -323,13 +326,12 @@ def unresolved_rejections(bundle: Bundle, affected) -> dict[str, dict]:
     tell" — only a positively read `reject` row, as the latest thing on
     record for that target, blocks anything here. A target absent from the
     readable ledger entirely is not reported either — absence of evidence
-    is not evidence of an unresolved rejection."""
-    latest: dict[str, dict] = {}
-    for row in memory.events(bundle)[0]:
-        target = row.get("target")
-        if target in affected:
-            latest[target] = row
-    return {cid: row for cid, row in latest.items() if row["event"] == "reject"}
+    is not evidence of an unresolved rejection.
+
+    The fold is `memory.latest_decisions`, shared with `proposals.dismiss`:
+    an agent's direct write is not a decision and is skipped by both."""
+    return {cid: row for cid, row in memory.latest_decisions(bundle, affected).items()
+            if row["event"] == "reject"}
 
 
 # --------------------------------------------------------------------------
@@ -997,6 +999,7 @@ def refresh_snapshot(bundle: Bundle, *, force: bool = False) -> dict:
     # OLD-content pins with a NEW commit's sha (see the docstring above).
     new_meta["git_sha"] = rev
     new_meta["extracted_at"] = datetime.date.today().isoformat()
+    new_meta["manifest_digest"] = manifest_digest(new_manifest)
     manifest_text = json.dumps(new_manifest, indent=0, sort_keys=True)
     pins_text = json.dumps(new_pins_doc, indent=2, sort_keys=True,
                            ensure_ascii=False) + "\n"

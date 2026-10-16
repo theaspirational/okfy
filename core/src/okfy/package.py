@@ -39,12 +39,13 @@ case "$POLICY" in
     # index/ and protocols/ above, `iter_md_files` enumerates it as a concept
     # like any other, so the justification above does not cover it. What IS
     # true: `refresh_snapshot` (okfy.update) is the only normal writer of
-    # this file, and it only ever changes two lines — `git_sha:` and
-    # `extracted_at:`; body and every other key (including `corpus:`) are
-    # carried over untouched (`new_meta = dict(c.meta)`, then only those two
-    # keys are overwritten). So the carve-out checks exactly that shape, not
-    # merely "the file is meta/corpus.md": a staged meta/corpus.md whose
-    # added/removed diff lines are ALL `git_sha:`/`extracted_at:` is a
+    # this file, and it only ever changes three lines — `git_sha:`,
+    # `extracted_at:` and `manifest_digest:`; body and every other key
+    # (including `corpus:`) are carried over untouched (`new_meta =
+    # dict(c.meta)`, then only those keys are overwritten). So the carve-out
+    # checks exactly that shape, not merely "the file is meta/corpus.md": a
+    # staged meta/corpus.md whose added/removed diff lines are ALL
+    # `git_sha:`/`extracted_at:`/`manifest_digest:` is a
     # snapshot refresh, never a rewrite an owner would need to review, and
     # passes. Anything else in that diff — body text, a new key, a changed
     # title, REPOINTING `corpus:` — is exactly the unreviewed content
@@ -56,7 +57,7 @@ case "$POLICY" in
       CORPUS_DIFF=$(git diff --cached -U0 -- meta/corpus.md \\
         | grep -E '^[+-]' \\
         | grep -vE '^(\\+\\+\\+|---)' \\
-        | grep -vE '^[+-](git_sha|extracted_at):')
+        | grep -vE '^[+-](git_sha|extracted_at|manifest_digest):')
       if [ -z "$CORPUS_DIFF" ]; then
         BLOCKED=$(echo "$BLOCKED" | grep -vx 'meta/corpus.md')
       fi
@@ -341,6 +342,18 @@ gap/flag/supersede, evidence kinds, `okfy fresh`).
 <!-- /okfy:memory -->
 """
 
+# The exception to MEMORY_BLOCK, rendered only for a bundle that lists
+# `direct.types`. Without it a packaged AGENTS.md tells an agent that reads
+# files, not tool descriptions, to propose a concept it may write at once.
+# Its own markers, so MEMORY_BLOCK and its 60-token bound are untouched.
+DIRECT_BLOCK = """
+<!-- okfy:direct -->
+Exception: a concept of type $types is written at once, without review:
+`okfy write` (MCP: `okfy_write`) against the `sha256` of the file as you read
+it, which `okfy_show` returns. Every other type is a proposal.
+<!-- /okfy:direct -->
+"""
+
 # The full discipline the pointer above sends an agent to — packaged to the
 # NON-resident `protocols/memory.md` (bundle.RESERVED_DIRS), read on demand
 # instead of billed every turn. Today's former MEMORY_BLOCK text, plus the
@@ -430,6 +443,11 @@ def render_agents_md(bundle: Bundle, archetype: Archetype, shard: bool = False) 
     # is not open. See the "Capability-gated surface" design note.
     if str(p.get("write_policy", "")) == "proposals":
         text += MEMORY_BLOCK
+        from okfy.validate import direct_policy
+        types, problems = direct_policy(p)
+        if types and not problems:   # a malformed block opens no lane: say nothing
+            text += Template(DIRECT_BLOCK).substitute(
+                types=", ".join(f"`{_one_line(t)}`" for t in types))
     return text
 
 

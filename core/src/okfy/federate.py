@@ -50,7 +50,8 @@ def active_rows(ws: Workspace) -> tuple[list, int, list[str]]:
 
 
 def expansion_terms(ws: Workspace, member_name: str, text: str,
-                    rows: list | None = None) -> list[str]:
+                    rows: list | None = None,
+                    indexes: dict | None = None) -> list[str]:
     """Terms to ADD when querying member_name: for each accepted same-as row
     with one side in another member and one side in member_name, if the query
     lexically touches the FAR side's title/aliases, contribute the NEAR side's
@@ -60,12 +61,16 @@ def expansion_terms(ws: Workspace, member_name: str, text: str,
     it has already been through `_scope_crosswalk_rows`. The default path
     (no `rows`, e.g. a direct call) scopes for itself: a personal member's
     out-of-scope concept must not drive expansion regardless of who calls
-    this (finding 41)."""
+    this (finding 41).
+
+    `indexes` (member name -> loaded index) lets `federated_query` load each
+    member index once per call; a direct call loads its own."""
     if rows is None:
         rows, _, _ = active_rows(ws)
         rows, _ = _scope_crosswalk_rows(rows, personal_scope_ids(ws, ws.project_key()))
     qtok = set(tokenize(text))
-    indexes = {m.name: load_index(Bundle(m.path)) for m in ws.members}
+    if indexes is None:
+        indexes = {m.name: load_index(Bundle(m.path)) for m in ws.members}
     extra: list[str] = []
     for r in rows:
         if r.rel != "same-as":
@@ -239,15 +244,19 @@ def federated_query(ws: Workspace, text: str, n: int = 10,
         notes.append(f"workspace: {n_stale} stale crosswalk row(s) excluded "
                      "from expansion/merge/constrains — re-review and re-pin "
                      "(okfy workspace status, /okfy:relink)")
+    # each member index is loaded ONCE per call and shared by expansion,
+    # search and the constrains pull (it used to be M*M + 2M loads); nothing
+    # outlives the call, so the next query sees any edit made in between
+    indexes = {m.name: load_index(Bundle(m.path)) for m in ws.members}
     expanded: dict[str, str] = {}
     for m in ws.members:
         b = Bundle(m.path)
         eff = lexicon.expand(lexicon.load_rows(b) + ws_rows, text)
-        extra = expansion_terms(ws, m.name, text, rows=rows)
+        extra = expansion_terms(ws, m.name, text, rows=rows, indexes=indexes)
         qtext = eff["expanded_query"] + (" " + " ".join(extra) if extra else "")
         expanded[m.name] = qtext
         notes += [f"{m.name}: {note}" for note in eff["notes"]]
-        pool = filter_pool(load_index(b))
+        pool = filter_pool(indexes[m.name])
         if m.role == "personal":
             # scope filtering happens BEFORE search_pool, so BM25's idf/avgdl
             # are computed over the already-narrowed pool — ranking of the
@@ -290,7 +299,6 @@ def federated_query(ws: Workspace, text: str, n: int = 10,
     top_refs = set()
     for e in out["knowledge"][:pull_top]:
         top_refs |= by_root.get(root.get(e["ref"], e["ref"]), {e["ref"]})
-    indexes = {m.name: load_index(Bundle(m.path)) for m in ws.members}
     for r in rows:
         if r.rel != "constrains":
             continue

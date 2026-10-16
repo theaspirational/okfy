@@ -13,18 +13,26 @@ from okfy.gitenv import run_git
 
 # `<producer>/<version>` or `<prefix>:<id>` — the §7 family is open, not a
 # whitelist of prefixes.
-ACTOR_RE = re.compile(r"^(?:[a-zA-Z][\w.-]*:\S+|[^\s/]+/[^\s/]+)$")
+# `\A…\Z`, not `^…$`: `$` also matches before a trailing newline.
+ACTOR_RE = re.compile(r"\A(?:[a-zA-Z][\w.-]*:\S+|[^\s/]+/[^\s/]+)\Z")
+# An actor lands in a ledger row, `log.md` and, since vsov/okfy#8, a git author
+# name and an `Okfy-Actor:` trailer. `\S` lets control characters through, so
+# the grammar alone is not enough: one printable line of bounded length. The
+# bound is the one OpenID Connect puts on `sub`.
+MAX_ACTOR_CHARS = 255
 E_ACTOR = "E_PROPOSAL_ACTOR"
 E_OWNER_ACTION_REQUIRED = "E_OWNER_ACTION_REQUIRED"
 
 
 def check_actor(actor) -> str:
     a = str(actor).strip() if actor is not None else ""
-    if not ACTOR_RE.match(a):
+    if not (ACTOR_RE.match(a) and a.isprintable() and len(a) <= MAX_ACTOR_CHARS):
         raise ValueError(
             f"{E_ACTOR}: {actor!r} is not an OKF v0.2 actor — use "
             "`<producer>/<version>` (e.g. claude-code/1.0) or `<prefix>:<id>` "
-            "(e.g. human:alice); pass it with `okfy propose --as <actor>`")
+            "(e.g. human:alice) of at most "
+            f"{MAX_ACTOR_CHARS} printable characters, no control characters; "
+            "pass it with `okfy propose --as <actor>`")
     return a
 
 

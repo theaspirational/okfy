@@ -168,6 +168,66 @@ actions = [p.get("action") for p in proposals]
 assert "flag" in actions and "gap" in actions, actions
 PY
 
+step "direct-write lane: okfy write, and okfy_write falling back to a proposal"
+# The lane is opt-in per concept type. Declare it for GlossaryTerm only, then:
+# a write against stale bytes is refused BY CODE, the same write against the
+# bytes that were read lands at once, and a Strategy sent through the same MCP
+# tool is filed under proposals/ with its concept file untouched.
+awk 'NR==1 { print; print "direct:"; print "  types: [GlossaryTerm]"; next }
+     { print }' "$BUNDLE/meta/purpose.md" > "$WORK/purpose-direct.md"
+grep -q '^  types: \[GlossaryTerm\]' "$WORK/purpose-direct.md" \
+  || fail "could not declare direct.types — the assertions below would be vacuous"
+mv "$WORK/purpose-direct.md" "$BUNDLE/meta/purpose.md"
+# A direct write passes the same archetype schema `review accept` applies, and a
+# GlossaryTerm requires `aliases` — so the new text carries one.
+cat > "$WORK/gamma-new.md" <<'EOF'
+---
+type: GlossaryTerm
+title: Gamma
+description: Rate of change of delta.
+aliases: [gamma risk]
+sources: [gamma.md]
+---
+
+Second derivative of price with respect to the underlying.
+EOF
+set +e
+okfy write "$BUNDLE" glossary/gamma --as claude-code/1.0 --from "$WORK/gamma-new.md" \
+  --expect 0000000000000000000000000000000000000000000000000000000000000000 \
+  >/dev/null 2>"$WORK/write-stale.err"
+WRC=$?
+set -e
+[ "$WRC" -ne 0 ] || fail "okfy write landed against bytes nobody read"
+grep -q 'E_WRITE_BASE_MOVED' "$WORK/write-stale.err" \
+  || { cat "$WORK/write-stale.err"; fail "a stale write was not refused as E_WRITE_BASE_MOVED"; }
+okfy write "$BUNDLE" glossary/gamma --as claude-code/1.0 --from "$WORK/gamma-new.md" \
+  --expect "$GAMMA_SHA" > "$WORK/write.json" || fail "okfy write"
+grep -q '"channel": "direct"' "$WORK/write.json" \
+  || { cat "$WORK/write.json"; fail "okfy write did not report the direct channel"; }
+grep -q 'with respect to the underlying' "$BUNDLE/glossary/gamma.md" \
+  || fail "okfy write reported success and the concept file did not change"
+grep -q '"origin": "agent-direct"' "$BUNDLE/meta/memory.jsonl" \
+  || fail "a direct write left no ledger row"
+python - "$BUNDLE" <<'PY' || fail "okfy_write did not route by concept type"
+import sys
+from pathlib import Path
+from okfy_mcp.handlers import h_show, h_write
+from okfy_mcp.resolve import Target
+t = Target(sys.argv[1])
+strategy = Path(sys.argv[1]) / "strategies" / "widget-straddle.md"
+before = strategy.read_bytes()
+shown = h_show(t, concept_id="strategies/widget-straddle")
+r = h_write(t, "strategies/widget-straddle", "claude-code/1.0", shown["sha256"],
+            patch=[{"old": "Gamma near expiry.", "new": "Gamma near expiry; vega on entry."}])
+assert r.get("persisted") is True and r.get("channel") == "proposal", r
+assert (Path(sys.argv[1]) / r["path"]).is_file() and strategy.read_bytes() == before, r
+shown = h_show(t, concept_id="glossary/gamma")
+d = h_write(t, "glossary/gamma", "claude-code/1.0", shown["sha256"],
+            patch=[{"old": "Second derivative", "new": "The second derivative"}])
+assert d.get("channel") == "direct", d
+assert d["sha256"] == h_show(t, concept_id="glossary/gamma")["sha256"], d
+PY
+
 step "validate + package + release-check reports (not passes)"
 okfy validate "$BUNDLE" --quiet || true      # a two-concept stub is not release-ready
 okfy package "$BUNDLE" >/dev/null || fail "okfy package"

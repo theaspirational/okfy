@@ -4,7 +4,21 @@ version = "0.29.0"
 description = "MCP stdio adapter for OKFy knowledge bundles"
 license = "Apache-2.0"
 requires-python = ">=3.11"
-dependencies = ["okfy", "mcp>=1.28,<2"]
+# Every third-party module okfy_mcp imports directly is declared here, not left
+# to arrive through `mcp`: the HTTP transport (okfy_mcp/http.py, server.py) uses
+# PyJWT (with its crypto extra, for the issuer's RS256 keys), httpx (the
+# discovery document), anyio, uvicorn, starlette and pydantic. The bounds
+# restate what `mcp` already requires and what uv.lock pins.
+dependencies = [
+    "okfy",
+    "mcp>=1.28,<2",
+    "pyjwt[crypto]>=2.10.1,<3",
+    "httpx>=0.27.1,<1",
+    "anyio>=4.5,<5",
+    "uvicorn>=0.31.1,<1",
+    "starlette>=0.27,<2",
+    "pydantic>=2.11,<3",
+]
 
 [project.scripts]
 okfy-mcp = "okfy_mcp.__main__:main"

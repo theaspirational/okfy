@@ -7,17 +7,51 @@ spec describes. "Deviation" means it cannot, and says what to do instead.
 
 | Spec area | § | OKFy | Status |
 |---|---|---|---|
-| Concept identity | 2, 3 | A concept's id is its path without `.md`; `index.md` and `log.md` are reserved. Files under `meta/` are bundle metadata (purpose, lexicon, corpus, plans), not domain concepts: they are left out of `index.md` and exempt from the archetype's rules. | Match, with `meta/` deviation |
+| Concept identity | 2, 3 | A concept's id is its path without `.md`; `index.md` and `log.md` are reserved. Files under `meta/` are bundle metadata (purpose, lexicon, corpus, plans), not domain concepts: they are left out of `index.md` and exempt from the archetype's rules. Beside the path id, OKFy adds two stable ids that survive a rename: `bundle_uid` in `meta/purpose.md` and `okf_id` on each concept page outside `meta/` (see [Stable identity](#stable-identity)). | Match, with `meta/` deviation |
 | Mandatory field | 4.1, 11 | Every concept needs a non-empty `type` (`E_TYPE`). | Match |
-| Extensibility | 4.1, 11 | Unknown keys are kept through propose and accept. OKFy adds its own: `aliases`, `stale` with its required `stale_reason` and `stale_since` (`E_STALE_FIELDS`), `review_due`, `evidence`, `proposal`, `supersedes`/`superseded_by` (must be reciprocal, `E_SUPERSEDE_DANGLING`), `applies_to` (personal-memory scope, ADR-0015; a non-empty list of project keys or `*`, `E_APPLIES_TO`). | Match |
+| Extensibility | 4.1, 11 | Unknown keys are kept through propose and accept. OKFy adds its own: `aliases`, `stale` with its required `stale_reason` and `stale_since` (`E_STALE_FIELDS`), `review_due`, `evidence`, `proposal`, `supersedes`/`superseded_by` (must be reciprocal, `E_SUPERSEDE_DANGLING`), `applies_to` (personal-memory scope, ADR-0015; a non-empty list of project keys or `*`, `E_APPLIES_TO`). The `direct` key in `meta/purpose.md` (concept types an agent may write without review) is bundle metadata, not a concept field: no concept gains or loses a key because of it, so OKF conformance is unaffected. | Match |
 | Provenance (`sources`) | 5.1 | `sources` is a list of corpus-relative path strings, optionally with a line anchor (`greeks.md#L12-L40`), checked against the frozen corpus. The spec's mapping form (`resource`, `title`, …) is not read. | Deviation: convert mappings to paths on import |
 | Actor convention | 7 | `<producer>/<version>`, `<prefix>:<id>`. Enforced whenever OKFy writes one: `okfy propose --as` refuses anything else (`E_PROPOSAL_ACTOR`). | Match |
-| Trust signals | 5.2 | §5.2 assigns `generated` to the current content and its last meaningful change; OKFy does not update it that way. `generated: {by, at}` is set once, by the `okfy propose` that first created a concept, and is carried forward unchanged through every later `okfy review accept` — it names the concept's first author, not its most recent editor. Who actually proposed the text that got verified is recorded separately, on the verification itself: `verified` is written only by `okfy review accept`, as the owner, each entry recording the sha256 of the text it verified and the actor who proposed it (`proposed_by`); when the text later changes again, validate warns `W_VERIFIED_SUPERSEDED` and the old entry stays as history. An agent cannot write `verified` (`E_PROPOSAL_EVIDENCE`). | Deviation: read `verified[-1].proposed_by`, not `generated.by`, for who last changed it |
+| Trust signals | 5.2 | §5.2 assigns `generated` to the current content and its last meaningful change; OKFy does not update it that way. `generated: {by, at}` is set once, by the `okfy propose` (or the direct `okfy write`) that first created a concept, and is carried forward unchanged through every later `okfy review accept` and direct write — it names the concept's first author, not its most recent editor. Who actually proposed the text that got verified is recorded separately, on the verification itself: `verified` is written only by `okfy review accept`, as the owner, each entry recording the sha256 of the text it verified and the actor who proposed it (`proposed_by`); when the text later changes again, validate warns `W_VERIFIED_SUPERSEDED` and the old entry stays as history. An agent cannot write `verified` (`E_PROPOSAL_EVIDENCE`; `E_DIRECT_OWNER_FIELD` on a direct write, whose text is therefore unverified until an accept — the same `W_VERIFIED_SUPERSEDED` when it edits verified text). | Deviation: read `verified[-1].proposed_by`, not `generated.by`, for who last changed it |
 | Lifecycle | 5.3 | `status` and `stale_after` are not used. `stale` is an owner decision with a reason (`okfy stale`), and it is not a status. `review_due` is a date for re-checking; once it passes, validate warns `W_REVIEW_DUE`, and the concept is never marked stale automatically. Foreign `status` / `stale_after` are kept as unknown keys, not interpreted. | Deviation |
 | Links and graph | 6 | Relative markdown links; every concept must be reachable from `index.md` or another concept. | Match |
 | Index and navigation | 8 | The root `index.md` is generated by `okfy package` and declares `okf_version: "0.2"` — its only allowed frontmatter (`E_INDEX_FRONTMATTER` names any other key). A hand-edited index line that no longer carries its concept's description warns `W_INDEX_DRIFT`. OKFy writes no sub-indexes. | Match |
 | Change history | 9 | `log.md` headings must be ISO 8601 dates (`E_LOG_DATE`); their order is not checked. | Match |
 | Attested computations | 10 | Not implemented: OKFy has no executable concept type. (OKFy's "attested spans" are a different thing — what an extraction worker reports it read.) | Not supported |
+
+## Stable identity
+
+A path id changes when a page moves. Two extra frontmatter keys do not:
+
+- `bundle_uid` in `meta/purpose.md` names the bundle. It cannot live in
+  `index.md`, whose frontmatter may declare only `okf_version` (§8).
+- `okf_id` names one concept page. It sits in that page's own frontmatter, so
+  a renamed or moved file keeps it.
+
+Both are uuid strings, minted once, persisted and never recomputed. `okfy
+init` writes `bundle_uid`; `okfy review accept` writes `okf_id` for a new page
+and keeps the page's `okf_id` and purpose.md's `bundle_uid` through an update;
+`okfy refine` refuses text that changes either. Those are random uuid4s.
+`okfy migrate ids` backfills both into an older bundle as uuid5s that every
+clone derives alike, so two clones migrating offline agree: `bundle_uid` from
+the commit that created the current `meta/purpose.md` (the latest add of that
+path along the first-parent mainline, a merge counting as its own add) plus the bundle's path in its repo, `okf_id` from `bundle_uid`, the
+commit that created the page and its path. A file deleted and later replaced
+at the same path is a new lineage and gets a new id; a file never committed,
+or whose path was last deleted, gets a random one. Only full clones are
+guaranteed to agree: a shallow clone that does not reach the creating commit
+derives a different id, so migrate from a full clone (`git fetch --unshallow`).
+A clone whose `core.worktree` points elsewhere reads a different bundle path, and
+so a different `bundle_uid`; migrate from an ordinary clone.
+
+The reserved pages carry no `okf_id`: `index.md`, `log.md`, the navigation
+files below, and everything under `meta/`. Their names are fixed, so a
+reference to one of them is `bundle_uid` plus the bundle-relative path (for
+example `<bundle_uid>` + `index.md`).
+
+To rename a page, move the file: its `okf_id` moves with it. Deleting it and
+writing a new one makes a new page with a new id. A copied page that keeps the
+original's `okf_id` is refused (`E_OKF_ID_DUPLICATE`).
 
 ## Navigation files
 

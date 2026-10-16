@@ -79,6 +79,10 @@ okfy init "$BUNDLE" --corpus "$CORPUS" --language en >/dev/null || fail "okfy in
 # by design — they are judgement, not mechanism — so the script supplies them
 # the way an interview would, as files.
 step "purpose + plan"
+# The interview rewrites purpose.md but must leave `bundle_uid` as `okfy init`
+# wrote it (plugin/commands/new.md): it is the bundle's stable identity.
+BUNDLE_UID_LINE="$(grep -m1 '^bundle_uid: ' "$BUNDLE/meta/purpose.md")" \
+  || fail "okfy init wrote no bundle_uid"
 cat > "$BUNDLE/meta/purpose.md" <<'EOF'
 ---
 type: Purpose
@@ -162,6 +166,9 @@ awk -v raw="$RAW" '
               done = 1
             } }
   { print }' "$BUNDLE/meta/purpose.md" > "$BUNDLE/meta/purpose.tmp"
+mv "$BUNDLE/meta/purpose.tmp" "$BUNDLE/meta/purpose.md"
+awk -v uid="$BUNDLE_UID_LINE" '{ print } /^type: Purpose$/ { print uid }' \
+  "$BUNDLE/meta/purpose.md" > "$BUNDLE/meta/purpose.tmp"
 mv "$BUNDLE/meta/purpose.tmp" "$BUNDLE/meta/purpose.md"
 grep -q "^  source_map: required$" "$BUNDLE/meta/purpose.md" \
   || fail "the normalization block was not spliced into the frontmatter"
@@ -445,6 +452,10 @@ rm -rf "$BUNDLE/drafts"
 git -C "$BUNDLE" add -A
 git -C "$BUNDLE" commit -q -m "consolidate: 5 concepts from 6 drafts"
 
+# Stage 5 step 10 of /okfy:extract: every new final concept gets its `okf_id`.
+step "identity"
+okfy migrate ids "$BUNDLE" >/dev/null || fail "okfy migrate ids"
+
 okfy ledger add "$BUNDLE" --run run-1 --segment consolidation \
   --inputs "straddle.md,collar.md,greeks.md" \
   --prompt-version consolidate@1 \
@@ -522,6 +533,10 @@ EOF
 step "index + package"
 okfy index "$BUNDLE" >/dev/null || fail "okfy index"
 okfy package "$BUNDLE" >/dev/null || fail "okfy package"
+# A bundle made the supported way carries both ids: no identity warning at all.
+okfy validate "$BUNDLE" > "$WORK/identity-validate.txt" 2>&1 || true
+grep -q 'W_BUNDLE_UID_MISSING\|W_OKF_ID_MISSING' "$WORK/identity-validate.txt" \
+  && fail "the reference bundle still warns that an id is missing"
 
 # --- L3: the purpose-fitness artifact --------------------------------------
 # `okfy sample` picks the concepts to review deterministically and reports the

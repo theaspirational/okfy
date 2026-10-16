@@ -288,6 +288,19 @@ def test_write_group_outranks_the_scope(root, issuer):
         assert "error" not in out and "Guest" in (root / "notes/a.md").read_text(encoding="utf-8")
 
 
+def test_read_group_closes_the_bundle(root, issuer):
+    """One issuer, several bundles: outside the read group nothing is served,
+    whatever scopes the client asked for; inside it, the write group still
+    decides the writes."""
+    oidc = OidcVerifier([issuer.url], ["okfy-memory"], write_group="victor",
+                        read_group="victor")
+    with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:
+        for tok in (issuer.mint("human:guest"), issuer.mint("human:guest", groups=["friends"])):
+            assert _post(url, tok) == 403
+        assert "notes/a" in asyncio.run(_call(url, issuer.mint("human:victor", groups=["victor"]),
+                                              "okfy_show", {"concept_id": "notes/a"}))["id"]
+
+
 def test_who_signed_the_token_wrote_the_concept(root, issuer):
     oidc = OidcVerifier([issuer.url], ["okfy-memory"])
     with _Server(http_app(root, oidc=oidc, public_url="http://memory.test/mcp")) as url:

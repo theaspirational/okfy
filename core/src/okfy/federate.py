@@ -264,7 +264,7 @@ def federated_query(ws: Workspace, text: str, n: int = 10,
             # never held the filtered ones (see test_personal_scope.py).
             pool, note = _personal_scope_filter(m, pool, ws.project_key())
             notes.append(note)
-        for rank, h in enumerate(search_pool(pool, eff["pins"], qtext, n)):
+        for rank, h in enumerate(search_pool(pool, eff["pins"], qtext, n, raw=text)):
             ref = f"{m.name}:{h['id']}"
             e = ranked.setdefault(ref, {
                 "ref": ref, "member": m.name, "role": role_of[m.name],

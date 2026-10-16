@@ -273,7 +273,9 @@ What changes against the shared token:
   does not say who the user is to the bundle. With `--oidc-write-group
   <name>`, `okfy:write` counts only for users whose token lists that group in
   a `groups` claim (the issuer's group), so a guest whose client asked for
-  every scope still reads only. Without the flag, the scope alone decides.
+  every scope still reads only. A non-member loses every `okfy:write` scope
+  on the token, however often the scope is repeated in it. Without the flag,
+  the scope alone decides.
 - **A read group.** `--oidc-read-group <name>` closes the bundle to everyone
   the issuer does not list in that group: outside it every scope is withheld
   and the request is answered 403, nothing served. One issuer can then serve
@@ -292,7 +294,15 @@ What changes against the shared token:
   endpoint first.
 
 Not done here, on purpose: login, users, revocation and token lifetime live in
-the issuer, once for every service that trusts it. `--token-file` and
+the issuer, once for every service that trusts it. Individual token
+revocation is not offered: a JWT the issuer signed stays valid until its
+`exp`, and this server keeps no list of withdrawn tokens. A signing key the
+issuer stops publishing stays accepted until the cached key set is re-read:
+at most its cache lifetime (300 s, PyJWT's default), or sooner when a token
+names a `kid` the cached set does not hold (newer PyJWT releases re-read
+for that at most once every 30 s). That bounds how long a retired
+key is trusted, not how long a token it already signed is valid; keep access
+tokens short-lived at the issuer. `--token-file` and
 `--oidc-issuer` are exclusive.
 
 ### What is and is not checked

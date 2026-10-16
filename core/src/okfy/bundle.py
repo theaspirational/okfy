@@ -21,12 +21,13 @@ RESERVED_DIRS = {"index", "protocols"}
 BUNDLE_MARKERS = {"meta/purpose.md": "Purpose", "meta/corpus.md": "CorpusSnapshot"}
 
 
-def is_bundle_dir(path) -> bool:
-    """The marker files with the frontmatter `type` init gives them: a corpus
-    folder that merely has its own meta/purpose.md and meta/corpus.md is corpus."""
+def markers_match(read) -> bool:
+    """`read(rel)` returns the text of a marker file (or raises OSError /
+    UnicodeDecodeError / ValueError when it is absent or unreadable). True iff
+    every marker is there with the frontmatter `type` init gives it."""
     for rel, typ in BUNDLE_MARKERS.items():
         try:
-            meta, _ = frontmatter.parse((Path(path) / rel).read_text(encoding="utf-8"))
+            meta, _ = frontmatter.parse(read(rel))
         except (OSError, ValueError):            # absent, undecodable, not frontmatter
             return False
         if meta.get("type") != typ:
@@ -34,17 +35,27 @@ def is_bundle_dir(path) -> bool:
     return True
 
 
-def drop_bundle_paths(root, rels) -> list[str]:
+def is_bundle_dir(path) -> bool:
+    """The marker files with the frontmatter `type` init gives them: a corpus
+    folder that merely has its own meta/purpose.md and meta/corpus.md is corpus."""
+    return markers_match(lambda rel: (Path(path) / rel).read_text(encoding="utf-8"))
+
+
+def drop_bundle_paths(root, rels, is_bundle=None) -> list[str]:
     """`rels` (posix, relative to `root`) minus every path inside a bundle
-    nested under `root` — a corpus listing must not read a bundle as corpus."""
+    nested under `root` — a corpus listing must not read a bundle as corpus.
+    `is_bundle(dir_rel)` decides whether a directory is a bundle; the default
+    reads the live files under `root` (is_bundle_dir). Git-mode diffs pass a
+    probe over a committed tree instead (update.corpus_diff)."""
     seen: dict[str, bool] = {}
+    probe = is_bundle or (lambda d: is_bundle_dir(Path(root) / d))
 
     def inside(rel: str) -> bool:
         parts = rel.split("/")[:-1]
         for i in range(1, len(parts) + 1):
             d = "/".join(parts[:i])
             if d not in seen:
-                seen[d] = is_bundle_dir(Path(root) / d)
+                seen[d] = probe(d)
             if seen[d]:
                 return True
         return False

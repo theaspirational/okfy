@@ -202,7 +202,11 @@ class OidcVerifier:
     def _client(jwks_uri: str) -> jwt.PyJWKClient:
         # The key fetch goes through urllib with its stock User-Agent, which
         # Cloudflare (in front of most issuers) answers 403; name the client.
-        return jwt.PyJWKClient(jwks_uri, cache_keys=True, timeout=10,
+        # cache_keys stays off: PyJWT's per-key cache has no expiry, so a key
+        # the issuer stopped publishing would stay trusted for the process's
+        # life. The JWKS-set cache (cache_jwk_set, 300 s) is bounded and kept;
+        # an unknown kid re-reads the set (newer PyJWT: at most every 30 s).
+        return jwt.PyJWKClient(jwks_uri, cache_keys=False, timeout=10,
                                headers={"User-Agent": "okfy-mcp"})
 
     def _recall(self, key: tuple) -> None:
@@ -293,7 +297,7 @@ class OidcVerifier:
         if (self.write_group and WRITE_SCOPE in scopes
                 and self.write_group not in groups):
             log.info("okfy:write withheld: %r is not in group %r", sub, self.write_group)
-            scopes.remove(WRITE_SCOPE)
+            scopes = [s for s in scopes if s != WRITE_SCOPE]   # every copy, not the first
         return AccessToken(token=token, client_id=str(claims.get("azp") or sub),
                            scopes=scopes, expires_at=int(claims["exp"]), subject=sub,
                            claims=claims)

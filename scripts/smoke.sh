@@ -407,4 +407,76 @@ d = json.load(open(sys.argv[1]))
 assert list(d["mcpServers"]), d
 PY
 
+step "mcp HTTP auth boundary: write group and retired signing keys (offline)"
+# In-process ASGI app over this bundle, real RS256 tokens from a synthetic
+# issuer; only discovery and the JWKS fetch are served locally (no network).
+# A reader outside the write group must not write however often `okfy:write`
+# repeats; a key the issuer stopped publishing must not verify. Each refusal
+# has its control: the owner writes, the current key verifies.
+python - "$BUNDLE" <<'PY' || fail "mcp HTTP auth boundary"
+import io, json, sys, time, types, urllib.request
+from pathlib import Path
+import jwt, jwt.jwk_set_cache, jwt.jwks_client
+from cryptography.hazmat.primitives.asymmetric import rsa
+from starlette.testclient import TestClient
+from okfy_mcp.http import OidcVerifier
+from okfy_mcp.server import http_app
+
+bundle = Path(sys.argv[1])
+ISS, AUD = "https://issuer.invalid/okfy", "okfy-smoke"
+keys = {k: rsa.generate_private_key(public_exponent=65537, key_size=2048) for k in ("k1", "k2")}
+published = {"kids": ["k1"]}
+
+def jwks():
+    return {"keys": [{**jwt.algorithms.RSAAlgorithm.to_jwk(keys[k].public_key(), as_dict=True),
+                      "kid": k, "use": "sig", "alg": "RS256"} for k in published["kids"]]}
+
+OidcVerifier._discover = staticmethod(lambda iss: (ISS, ISS + "/jwks"))
+# PyJWT fetches through urlopen (<= 2.13) or build_opener().open (newer): serve
+# both. Its cache clocks read a fake monotonic time we advance by hand, so
+# the newer client's 30 s re-read cooldown is passed without sleeping.
+serve = lambda req, **kw: io.BytesIO(json.dumps(jwks()).encode())
+urllib.request.urlopen = serve
+urllib.request.build_opener = lambda *h: types.SimpleNamespace(open=serve)
+clock = [1000.0]
+for mod in (jwt.jwks_client, jwt.jwk_set_cache):
+    mod.time = types.SimpleNamespace(monotonic=lambda: clock[0])
+
+def mint(scope, groups, kid="k1", sub="guest"):
+    return jwt.encode({"iss": ISS, "aud": AUD, "sub": sub, "exp": int(time.time()) + 300,
+                       "scope": scope, "groups": groups}, keys[kid], algorithm="RS256",
+                      headers={"kid": kid})
+
+def filed():
+    return sorted(p.name for p in (bundle / "proposals").glob("*.md"))
+
+app = http_app(bundle, oidc=OidcVerifier([ISS], [AUD], write_group="owners"),
+               public_url="http://127.0.0.1:8765/mcp")
+
+def gap(client, token, query):
+    r = client.post("/mcp", headers={"Authorization": "Bearer " + token,
+                                     "Accept": "application/json, text/event-stream"},
+                    json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "okfy_propose", "arguments": {
+                              "target_id": "", "action": "gap", "note": "smoke auth",
+                              "query": query}}})
+    return r.status_code, (r.json() if r.status_code == 200 else None)
+
+with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+    before = filed()
+    status, body = gap(client, mint("okfy:read okfy:write okfy:write", []), "smoke: guest")
+    assert status == 200 and "E_MCP_FORBIDDEN" in json.dumps(body), (status, body)
+    assert filed() == before, "a guest with a repeated okfy:write filed a proposal"
+    status, body = gap(client, mint("okfy:read okfy:write", ["owners"], sub="owner"),
+                       "smoke: owner")
+    assert status == 200 and '\\"persisted\\": true' in json.dumps(body), (status, body)
+    assert len(filed()) == len(before) + 1, "the owner's proposal was not filed"
+
+    published["kids"] = ["k2"]                          # the issuer retires k1
+    clock[0] += 31                                      # past any re-read cooldown
+    assert gap(client, mint("okfy:read", [], kid="k2"), "smoke: k2")[0] == 200
+    assert gap(client, mint("okfy:read", [], kid="k1"), "smoke: k1")[0] == 401, \
+        "a token signed by the retired k1 was accepted"
+PY
+
 printf '\nSMOKE OK\n'

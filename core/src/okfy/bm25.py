@@ -18,8 +18,12 @@ STOPWORDS = frozenset(
     "that the this to was what which who with".split())
 
 
-def query_terms(text: str) -> list[str]:
-    return [t for t in tokenize(text) if t not in STOPWORDS]
+def query_terms(text: str, protected: frozenset[str] | set[str] = frozenset()) -> list[str]:
+    """The query's scoring terms. A stopword is dropped unless it is in
+    `protected`: the query's own tokens when the whole query is a concept's
+    title or alias (query.domain_tokens). A query that names a concept is
+    vocabulary, not noise; the same words in any other query stay noise."""
+    return [t for t in tokenize(text) if t not in STOPWORDS or t in protected]
 
 
 class BM25:

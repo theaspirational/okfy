@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import unicodedata
 from pathlib import Path
@@ -241,6 +242,18 @@ def _refuse_if_ledger_rewritten(bundle: Bundle, *relpaths: str) -> None:
                 f"{relpath}'s append-only contract is already broken — in "
                 "the index, the working tree, or both — refused before "
                 "anything is written or committed"))
+
+
+def _refuse_unreadable_ledger(bundle: Bundle, what: str) -> None:
+    """`E_MEMORY_LINE` when `meta/memory.jsonl` has a line the reader cannot
+    parse. `what` names the caller; the code, the first bad line and the
+    repair are the one shared part (see `_gate`)."""
+    _events, problems = memory.events(bundle)
+    if problems:
+        raise ValueError(
+            f"{problems[0]}; {what} cannot record into {memory.MEMORY_FILE} "
+            "while it has unreadable lines — `okfy validate` lists each one; "
+            "the owner repairs the ledger, then try again")
 
 
 def _flag_reject_hashes(flag_type: str | None, target: str | None,
@@ -2249,10 +2262,19 @@ def propose_checked(bundle: Bundle, meta: dict, body: str, target: str,
 def _atomic_write(path: Path, data: bytes) -> None:
     """Whole file or nothing: a crash mid-write must not leave half a concept
     for `okfy_fresh` to hash as a version. The temp name is not `*.md`, so
-    concept discovery never sees one a crash left behind."""
-    tmp = path.with_name(f".{path.name}.tmp")
+    concept discovery never sees one a crash left behind.
+
+    The temp is this call's own: a random name of fixed length (26 bytes, so
+    no legal target name makes it too long), created `O_EXCL|O_NOFOLLOW`,
+    so a file or symlink someone planted under any name can neither receive
+    the write nor be unlinked by the cleanup. It is born `0o666 & ~umask`, as
+    a plain `open(..., "wb")` would make a new file, and takes the target's
+    mode when there is one."""
+    tmp = path.with_name(f".okfy-{secrets.token_hex(8)}.tmp")   # fixed length: fits any name
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), 0o666)
     try:
-        with open(tmp, "wb") as fh:
+        with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
@@ -2438,6 +2460,10 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
                 + "; ".join(f"{f.code}: {f.message}" for f in r.errors)
                 + f" — fix the concept and write again, or {propose_instead}")
     _refuse_if_ledger_rewritten(bundle, memory.MEMORY_FILE)
+    # The row this write appends must stay readable beside the others: a line
+    # the ledger reader cannot parse is refused here, before anything is
+    # written, exactly as `_gate` refuses a proposal on it.
+    _refuse_unreadable_ledger(bundle, "a direct write")
 
     data = frontmatter.serialize(meta, body).encode("utf-8")
     action = "create" if create else "update"

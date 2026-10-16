@@ -7,7 +7,8 @@ their history is not something this file can verify.
 
 An audit of v0.29 found three issues in the shipped tool. The three fixes below do not change
 how `okfy query` ranks a single bundle. The contributed retrieval change (the first of the
-contributed subsections below) does: it moves the retrieval code digest (see there).
+contributed subsections below) does: it moves the retrieval code digest (see there), and
+the round-19 subsection moves it a second time.
 
 ### Stricter behaviour
 
@@ -23,6 +24,46 @@ contributed subsections below) does: it moves the retrieval code digest (see the
   predicates. It is now `E_REL_EVAL_INVALID` (bundle) or `E_REL_WS_EVAL_INVALID` (workspace)
   with `ok: false`, from the API and the CLI alike.
 
+### okfy-mcp HTTP authorization
+
+- **A repeated `okfy:write` no longer survives `--oidc-write-group`.** Outside the group the
+  server removed only the first `okfy:write` from the token's scope string, so a token whose
+  `scope` repeats it (`okfy:read okfy:write okfy:write`) kept a write scope and reached
+  `okfy_write` and `okfy_propose`. Every copy is removed now. A group member, and a token
+  with one `okfy:write`, behave as before.
+- **A signing key the issuer stops publishing is no longer trusted for the life of the
+  process.** The JWKS client kept an unbounded per-key cache, with no expiry. It now relies on
+  the bounded JWKS-set cache only (300 s, and a token naming an unknown `kid` re-reads the
+  set; newer PyJWT releases allow that re-read at most once every 30 s), so a retired key is refused once the set is re-read. A JWT the issuer already signed
+  stays valid until its `exp`; individual token revocation is still not offered, and the docs
+  now say so.
+
+### Direct write and `migrate ids`: filesystem and ledger
+
+- **A planted temp file can no longer redirect a direct write.** The atomic write used a
+  predictable temp name (`.<file>.tmp`) opened with a plain `open`, so a symlink planted
+  there (to `meta/purpose.md`, or to a file outside the bundle) received the write, and the
+  cleanup on failure then unlinked it. The temp is now this call's own: a random name of
+  fixed length (`.okfy-<16 hex>.tmp`, so a long concept file name never pushes it past the
+  file-name limit) created with `O_EXCL|O_NOFOLLOW` in the same directory, fsynced, then renamed over the
+  target. It still ends in `.tmp`, so concept discovery never sees one, and the file keeps
+  its mode (a new file gets what a plain create would). Only the call's own temp is removed.
+- **`okfy migrate ids` checks every file before it writes the first.** A concept page that
+  was a symlink to a file outside the bundle had that file rewritten, after the pages before
+  it were already migrated. Every page the run would write (`meta/purpose.md` included) is
+  now checked first, and one that is a symlink or resolves outside the bundle is refused
+  with the new `E_MIGRATE_TARGET` (exit 2, nothing written). Pages that already carry an
+  `okf_id` are not touched, and a second run still writes nothing.
+- **A direct write refuses on an unreadable ledger instead of recording into it.** With an
+  unparseable line in `meta/memory.jsonl` (a torn `{"interrupted":`), `okfy write` succeeded
+  and its row was lost. It is now refused with `E_MEMORY_LINE`, the code `okfy propose`
+  already used, before the concept, `log.md`, the ledger or git change. The byte-prefix
+  check (`E_LEDGER_REWRITTEN`) stays; both run.
+- **A ledger whose last row has no final newline no longer swallows the next row.** Every
+  caller appends through `memory.record`, which now writes the missing newline in the same
+  append as the new row, so the event is a line of its own and reads back. A ledger that
+  already ends in a newline is appended to exactly as before.
+
 ### Faster federation
 
 - `federated_query` loads each member's index once per query instead of M² + 2M times
@@ -35,7 +76,10 @@ contributed subsections below) does: it moves the retrieval code digest (see the
 
 ### Codes
 
-- **Widened, same names:** `E_REL_WS_ACCEPTANCE_INVALID` also covers a non-mapping policy
+- **New:** `E_MIGRATE_TARGET` (`okfy migrate ids` would write through a symlink or outside
+  the bundle).
+- **Widened, same names:** `E_MEMORY_LINE` also stops a direct write;
+  `E_REL_WS_ACCEPTANCE_INVALID` also covers a non-mapping policy
   and unknown keys; `E_REL_EVAL_INVALID` and `E_REL_WS_EVAL_INVALID` also cover a non-string
   verdict.
 
@@ -55,7 +99,10 @@ change for any query containing a listed stopword, in a single bundle and in a w
 (`federated_query` ranks through the same `search_pool`).
 The digest value above is the one after both contributed changes in this section and the
 next (`okfy links` also lives in `query.py`); it is what the working tree computes, not a
-step-by-step history.
+step-by-step history. The round-19 subsection below ("Round 19: an alias that is a
+stopword, a pinned diff, and a missing manifest") moves it again, to `94950666…3359`; the
+lines in this section that say the digest "stays `1c923e5c…b021`" describe the change they
+sit in, not the final value.
 
 - **Stopwords leave the query.** `query.search_pool` drops a short English list
   (the, who, how, ...) before BM25; the index keeps every token, so no bundle's
@@ -73,6 +120,54 @@ step-by-step history.
   bundle-mode search with no hits carries `way_out` naming
   `okfy_propose(action="gap", query=<the user's words>)`. Until now the gap
   door was one phrase inside okfy_propose's description.
+
+### Round 19: an alias that is a stopword, a pinned diff, and a missing manifest
+
+- **An exact domain alias is no longer erased by the stopword list.** A concept whose title or
+  alias is `and`, `or`, `in`, `as`, `at`, `by` (or the phrase `as of`) could not be found
+  by it: the query dropped it and the result was empty, and
+  `okfy_query` said `no-term-matched`. Rule, with no word list: when the whole query, word
+  for word, is a title or alias of some concept in the pool being searched, its words are
+  never dropped as stopwords. Any other query keeps them as noise: `who is the` returns
+  nothing over a note whose body says "Who is the person?", over a title like "The Rules of
+  the Road", and over a concept titled "The". Two broader drafts (protect every title token;
+  protect a name found anywhere in the query) let such titles turn `the` and `of` into
+  scoring terms for unrelated questions, and an independent check caught both. Not covered:
+  an alias inside a longer query (`what is the as of operator` still drops `as of`, as
+  before), and identifiers, which the index does not search. The rule lives in
+  `query.search_pool`, so `okfy query`, `okfy_query` and the federated query get it
+  together; the name check reads the words the user typed, so a lexicon row or a
+  crosswalk term appended by expansion does not hide the alias. Ranking changes only for
+  a query that is exactly such a name.
+- **This moves the retrieval code digest a second time.** `bm25.py` and `query.py` changed,
+  so `retrieval_code_digest()` moves from `1c923e5c…b021` to `94950666…3359`
+  (`949506666368cb938e36196cba14a6138cf9493e7a74ccec66a87e9ce4f43359`). Every recorded eval
+  run, bundle or workspace, therefore reads stale until its owner re-runs `okfy eval run`
+  and repeats the owner checkpoint. `federate.py` changed as well (it passes the user's
+  query to the name check), so the federation code digest moves too and recorded
+  federated runs read stale the same way. No recorded eval run, owner verdict or real
+  bundle was changed by this change; the index fingerprint does not move.
+- **A pinned git diff is decided by the two committed trees.** `corpus_diff` in git mode
+  used to ask the working tree whether a directory was an embedded bundle, so untracked
+  `meta/purpose.md` and `meta/corpus.md` added after the pinned commit made a committed
+  change under that directory vanish from `changed`/`removed`, and `update_plan` with it.
+  Now a path is corpus on a side iff it exists in that side's committed tree and no
+  ancestor directory in that tree is an embedded bundle (both markers committed, with the
+  types `init` gives them). Corpus on both sides and modified: `changed`. Corpus on the new
+  side only: `added`, including a directory that stopped being a bundle. Corpus on the old
+  side only: `removed`, including a directory that became a bundle (its files left the
+  corpus). Corpus on neither side: not reported. Files git does not list as modified, but
+  whose directory changed role, are found from the two tree listings and reported the same
+  way. Untracked or uncommitted marker changes alter nothing. Manifest mode (a corpus
+  that is not a git repo) is unchanged and still reads the working tree.
+- **A missing manifest no longer disables the declared digest.** When `meta/corpus.md`
+  declares `manifest_digest`, a `meta/corpus-manifest.json` that is missing, unreadable (a
+  directory, no permission) or wrong is `E_MANIFEST_DIGEST`; before, only a present but
+  damaged file was. A snapshot that never declared a digest is unchanged. The sources check
+  does not run without the manifest, standalone or embedded (an embedded bundle no longer
+  falls back to the live corpus tree there), so the report has no `sources` summary and
+  claims no pass. A bundle that fails this way now validates red until `okfy snapshot` is
+  re-run.
 
 ### Stable page identity: `bundle_uid`, `okf_id`, `okfy migrate ids`
 

@@ -129,6 +129,24 @@ def _add_key(path, key: str, value: str) -> None:
     path.write_text(out, encoding="utf-8")
 
 
+def _refuse_unsafe_target(bundle: Bundle, path) -> None:
+    """`E_MIGRATE_TARGET` for a page the migration would write through a
+    symlink, or that resolves outside the bundle: `read_text`/`write_text`
+    follow links, so the rewrite would land in a file the bundle does not own."""
+    rel = path.relative_to(bundle.root).as_posix()
+    if path.is_symlink():
+        raise ValueError(
+            f"E_MIGRATE_TARGET: {rel} is a symbolic link — `migrate ids` writes "
+            "into the file a link points at, so it never writes through one; "
+            "replace the link with the real file (or remove it), then migrate "
+            "again; nothing was written")
+    if not path.resolve().is_relative_to(bundle.root):
+        raise ValueError(
+            f"E_MIGRATE_TARGET: {rel} resolves outside the bundle — `migrate ids` "
+            "never writes outside it; move the real file inside, then migrate "
+            "again; nothing was written")
+
+
 def migrate_ids(bundle: Bundle) -> dict:
     """Backfill `bundle_uid` and every missing `okf_id`. A key already present
     is never touched — even an empty one, which `okfy validate` reports
@@ -137,16 +155,24 @@ def migrate_ids(bundle: Bundle) -> dict:
     An `okf_id` is uuid5 over the bundle_uid, the commit that created the
     page (`_added_in`) and its path, so clones agree page by page; `#n` steps
     past one a page moved in the working tree still holds. A page with no
-    such commit gets a random one."""
+    such commit gets a random one.
+
+    A page that is a symlink, or resolves outside the bundle, is refused
+    (`E_MIGRATE_TARGET`) before anything is written."""
     out = {"bundle_uid": None, "okf_id": []}
     purpose = bundle.get("meta/purpose")
     if purpose is None:
         raise FileNotFoundError("meta/purpose.md missing — not an OKFy bundle?")
+    concepts = bundle.concepts()
+    # Every file this run would write is checked before the first one is: a
+    # refusal halfway would leave the pages before it already migrated.
+    for target in ([purpose] if "bundle_uid" not in purpose.meta else []) + [
+            c for c in concepts if carries_okf_id(c.id) and "okf_id" not in c.meta]:
+        _refuse_unsafe_target(bundle, target.path)
     uid = purpose.meta.get("bundle_uid")
     if "bundle_uid" not in purpose.meta:
         uid = out["bundle_uid"] = _legacy_uid(bundle.root)
         _add_key(purpose.path, "bundle_uid", uid)
-    concepts = bundle.concepts()
     taken = {str(c.meta["okf_id"]) for c in concepts if "okf_id" in c.meta}
     for c in concepts:
         if carries_okf_id(c.id) and "okf_id" not in c.meta:

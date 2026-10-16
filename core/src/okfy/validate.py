@@ -775,17 +775,25 @@ def _check_corpus_snapshot(bundle: Bundle, r: Report, strict: bool = False):
         return
     want = snap.meta.get("manifest_digest")
     mf = bundle.root / "meta" / "corpus-manifest.json"
-    if want is not None and mf.is_file():
+    if want is not None:
+        # A declared digest is a promise about the manifest. A manifest that is
+        # missing, a directory, or unreadable breaks it exactly as an edited
+        # one does; only a snapshot that never declared a digest (a legacy
+        # bundle) may go without.
         try:
             got = manifest_digest(json.loads(mf.read_text(encoding="utf-8")))
+            problem = ("manifest_digest does not match meta/corpus-manifest.json"
+                       if got != want else None)
+        except FileNotFoundError:
+            problem = "manifest_digest is declared but meta/corpus-manifest.json is missing"
         except (OSError, ValueError, TypeError):
-            got = None
-        if got != want:
+            problem = "manifest_digest is declared but meta/corpus-manifest.json is unreadable"
+        if problem:
             r.add("error", "E_MANIFEST_DIGEST", "meta/corpus.md",
-                  "manifest_digest does not match meta/corpus-manifest.json — "
+                  f"{problem} — "
                   "the snapshot no longer describes the bytes it read (the "
-                  "manifest was edited, or written by something other than "
-                  "`okfy snapshot`); re-run `okfy snapshot`")
+                  "manifest was edited, removed, or written by something other "
+                  "than `okfy snapshot`); re-run `okfy snapshot`")
     sha = str(snap.meta.get("git_sha") or "").strip()
     corpus = Path(str(snap.meta.get("corpus") or ""))
     if not sha or not corpus.is_dir() or not (corpus / ".git").exists():
@@ -1254,9 +1262,32 @@ def _source_checker(bundle: Bundle, r: Report | None = None, strict: bool = Fals
     return None
 
 
+def _declared_manifest_unavailable(bundle: Bundle) -> bool:
+    """The snapshot declares a `manifest_digest`, yet meta/corpus-manifest.json
+    is not a readable file."""
+    try:
+        snap = bundle.get("meta/corpus")
+    except frontmatter.FrontmatterError:
+        return False
+    if snap is None or snap.meta.get("manifest_digest") is None:
+        return False
+    try:
+        (bundle.root / "meta" / "corpus-manifest.json").read_bytes()
+    except OSError:
+        return True
+    return False
+
+
 def _check_sources(bundle: Bundle, concepts, r: Report, strict=False):
     """ADR-0013: broken sources paths signal, never flip the flag — warnings by
     default, errors only under --strict-sources (new extractions)."""
+    if _declared_manifest_unavailable(bundle):
+        # E_MANIFEST_DIGEST (_check_corpus_snapshot) is the finding. No basis
+        # to resolve sources against, so no `sources` summary either: a
+        # report that omits it says the check did not run; an embedded bundle
+        # does not fall back to the live corpus tree, which the snapshot does
+        # not pin.
+        return
     exists = _source_checker(bundle, r, strict)
     if exists is None:
         return

@@ -81,8 +81,15 @@ def record(bundle, event: str, *, actor: str, proposal: str | None, target: str 
     path = bundle.root / MEMORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     line = (json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
     try:
+        # A last row with no final LF (a hand edit, a crash after the JSON)
+        # would otherwise swallow this one: `{...}{...}` is one unreadable
+        # line and both events are lost. The LF that ends it goes in the same
+        # append as the new row, so no reader sees the file between the two.
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            line = b"\n" + line
         os.write(fd, line)
     finally:
         os.close(fd)

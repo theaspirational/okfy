@@ -5,11 +5,12 @@ import datetime
 import hashlib
 import json
 import tempfile
+from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path
 
 from okfy import frontmatter, memory
-from okfy.bundle import Bundle, drop_bundle_paths
+from okfy.bundle import BUNDLE_MARKERS, Bundle, drop_bundle_paths, markers_match
 from okfy.gitenv import run_git
 from okfy.init import _corpus_git_sha, _manifest, manifest_digest
 
@@ -148,6 +149,85 @@ def _materialize_pinned_paths(corpus: Path, rev: str, relpaths: set[str],
             continue
 
 
+def _committed_tree(corpus: Path, rev: str) -> tuple[set[str], Callable[[str], bool]]:
+    """(every file path at `rev`, probe) — corpus-relative, read from the
+    COMMITTED tree only (one `git ls-tree`, plus one `git show` per marker
+    file of a directory that has both). `probe(dir)` is True iff `dir` is an
+    embedded bundle in that tree. `ls-tree ... -- .` is relative to `corpus`,
+    which is often a subdirectory of the repo (see _materialize_pinned_paths)."""
+    out = run_git(corpus, "ls-tree", "-r", "-z", "--name-only", rev, "--", ".",
+                  capture_output=True, text=True, check=True).stdout
+    names = {n for n in out.split("\0") if n}
+    markers = list(BUNDLE_MARKERS)
+    suffixes = ["/" + m for m in markers]
+    candidates = {n[:-len(suffixes[0])] for n in names if n.endswith(suffixes[0])}
+    candidates = {d for d in candidates if d and all(d + sfx in names for sfx in suffixes)}
+
+    def probe(d: str) -> bool:
+        if d not in candidates:
+            return False
+
+        def read(rel: str) -> str:
+            r = run_git(corpus, "show", f"{rev}:./{d}/{rel}", capture_output=True)
+            if r.returncode != 0:
+                raise OSError(rel)
+            return r.stdout.decode("utf-8")
+        return markers_match(read)
+    return names, probe
+
+
+def _git_corpus_listing(corpus: Path, old_sha: str, new_sha: str,
+                        name_status: str) -> tuple[list[str], list[str], list[str]]:
+    """(changed, added, removed) corpus paths between two commits, with
+    "corpus" decided by the two COMMITTED trees, never by the working tree.
+
+    Rule: a path is corpus on a side iff it exists in that side's tree and no
+    ancestor directory in that tree is an embedded bundle (meta/purpose.md of
+    type Purpose AND meta/corpus.md of type CorpusSnapshot, committed). Then
+      corpus on both sides, modified  -> changed
+      corpus on the new side only     -> added   (new file, or a directory
+                                                  that stopped being a bundle)
+      corpus on the old side only     -> removed (deleted file, or a directory
+                                                  that became a bundle)
+      corpus on neither side          -> not reported
+    A rename is a remove of the old path plus an add of the new one. Files
+    that git lists as unchanged but whose directory flipped between bundle and
+    plain are reported too (added/removed), found from the two tree listings
+    so the answer does not hinge on what git happened to print. Markers that
+    exist only in the working tree (untracked, or deleted but not committed)
+    change nothing: the pinned diff depends on the two revisions alone."""
+    old_names, old_probe = _committed_tree(corpus, old_sha)
+    new_names, new_probe = _committed_tree(corpus, new_sha)
+    old_side: set[str] = set()
+    new_side: set[str] = set()
+    modified: set[str] = set()
+    for line in name_status.splitlines():
+        parts = line.split("\t")
+        status = parts[0]
+        if status.startswith("R"):
+            old_side.add(parts[1])
+            new_side.add(parts[2])
+        elif status == "A":
+            new_side.add(parts[1])
+        elif status == "D":
+            old_side.add(parts[1])
+        else:                                   # M, T, ...
+            old_side.add(parts[1])
+            new_side.add(parts[1])
+            modified.add(parts[1])
+    # Either marker alone can flip a directory (the other one unchanged).
+    touched = {p[:-len(sfx)] for p in old_side | new_side
+               for sfx in ("/" + m for m in BUNDLE_MARKERS) if p.endswith(sfx)}
+    for d in sorted(touched):
+        if d and old_probe(d) != new_probe(d):
+            old_side |= {n for n in old_names if n.startswith(d + "/")}
+            new_side |= {n for n in new_names if n.startswith(d + "/")}
+    corp_old = set(drop_bundle_paths(corpus, sorted(old_side), old_probe))
+    corp_new = set(drop_bundle_paths(corpus, sorted(new_side), new_probe))
+    return (sorted(modified & corp_old & corp_new),
+            sorted(corp_new - corp_old), sorted(corp_old - corp_new))
+
+
 def corpus_diff(bundle: Bundle, *, rev: str | None = _UNSET) -> dict:
     """{"mode", "old", "new", "changed", "added", "removed",
     "skipped_dangling_symlinks"} — what changed in the corpus since the last
@@ -206,22 +286,10 @@ def corpus_diff(bundle: Bundle, *, rev: str | None = _UNSET) -> dict:
         out = run_git(
             corpus, "diff", "--name-status", "--relative", "-M", old_sha, new_sha,
             capture_output=True, text=True, check=True).stdout
-        changed, added, removed = [], [], []
-        for line in out.splitlines():
-            parts = line.split("\t")
-            status = parts[0]
-            if status.startswith("R"):          # rename: treat as remove+add
-                removed.append(parts[1])
-                added.append(parts[2])
-            elif status == "A":
-                added.append(parts[1])
-            elif status == "D":
-                removed.append(parts[1])
-            else:                               # M, T, ...
-                changed.append(parts[1])
-        # Any other bundle embedded in the corpus is not corpus either.
-        changed, added, removed = (drop_bundle_paths(corpus, ps)
-                                   for ps in (changed, added, removed))
+        # Which paths are corpus is decided by the two committed trees, not
+        # by marker files in the working tree (the rule is written out in
+        # _git_corpus_listing).
+        changed, added, removed = _git_corpus_listing(corpus, old_sha, new_sha, out)
         return {"mode": "git", "old": old_sha, "new": new_sha,
                 "changed": sorted(p for p in changed if keep(p)),
                 "added": sorted(p for p in added if keep(p)),

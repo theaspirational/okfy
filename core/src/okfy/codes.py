@@ -407,7 +407,7 @@ CODES: dict[str, dict] = {
     },
     "E_MANIFEST_DIGEST": {
         "kind": "error",
-        "summary": "meta/corpus.md `manifest_digest` does not match meta/corpus-manifest.json — the snapshot no longer describes the bytes it read",
+        "summary": "meta/corpus.md `manifest_digest` does not match meta/corpus-manifest.json, or that manifest is missing or unreadable — the snapshot no longer describes the bytes it read",
         "way_out": "re-run `okfy snapshot`",
     },
     "W_DANGLING_LINK": {
@@ -782,7 +782,7 @@ CODES: dict[str, dict] = {
     "E_MEMORY_LINE": {
         "kind": "error",
         "summary": "a meta/memory.jsonl line is not JSON, not an object, missing a required key, names an unknown event, or its `at` is not a usable RFC3339 UTC timestamp",
-        "way_out": "fix or remove the reported line; `okfy propose`'s rejected-content gate refuses to run while any line is unreadable",
+        "way_out": "fix or remove the reported line; `okfy propose`'s rejected-content gate and a direct write (`okfy_write`) refuse to run while any line is unreadable — a direct write refuses before it changes anything",
     },
     "E_LEDGER_REWRITTEN": {
         "kind": "error",
@@ -1314,6 +1314,11 @@ CODES: dict[str, dict] = {
         "kind": "error",
         "summary": "`okfy package` was given both --shard-index and --flat-index, which ask for opposite index modes",
         "way_out": "pass one of them, or neither to keep the mode meta/package.json recorded; nothing was written",
+    },
+    "E_MIGRATE_TARGET": {
+        "kind": "error",
+        "summary": "`okfy migrate ids` would write a page that is a symbolic link, or that resolves outside the bundle, so the rewrite would land in a file the bundle does not own",
+        "way_out": "replace the link with the real file inside the bundle (or remove it) and run migrate again; the refusal comes before the first write, so nothing was changed",
     },
     "E_STALE_NAVIGATION": {
         "kind": "error",

@@ -107,3 +107,21 @@ def test_history_is_the_ledger_newest_first(root):
     assert h["events"][0]["at"] >= h["events"][1]["at"]
     assert len(handlers.h_history(t, "notes/a", limit=1)["events"]) == 1
     assert handlers.h_history(t, "notes/a", proposal="proposals/none")["events"] == []
+
+
+def test_changes_is_the_ledger_window_newest_first(root):
+    t = Target(root)
+    sha0 = handlers.h_show(t, concept_id="notes/a")["sha256"]
+    first = _write(t, ACTOR_A, sha0, "Agent one.")
+    _write(t, ACTOR_B, first["sha256"], "Agent two.", old="Agent one.")
+    out = handlers.h_changes(t, since="2000-01-01")
+    assert out["since"] == "2000-01-01T00:00:00Z" and out["count"] >= 2
+    assert [e["actor"] for e in out["events"][:2]] == [ACTOR_B, ACTOR_A]
+    assert out["next_since"] == out["events"][0]["at"]
+    assert len(handlers.h_changes(t, limit=1)["events"]) == 1
+    assert handlers.h_changes(t, actor=ACTOR_B)["count"] == 1
+    assert handlers.h_changes(t, until="2000-01-01")["events"] == []
+    bad = handlers.safe_call(handlers.h_changes, t, since="yesterday")
+    assert bad["error"] == "E_CHANGES_WINDOW"
+    backwards = handlers.safe_call(handlers.h_changes, t, since="2026-02-01", until="2026-01-01")
+    assert backwards["error"] == "E_CHANGES_WINDOW"

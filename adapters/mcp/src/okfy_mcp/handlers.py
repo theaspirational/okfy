@@ -45,6 +45,7 @@ E_FRESH_WORKSPACE = "E_FRESH_WORKSPACE"
 E_DIFF_WORKSPACE = "E_DIFF_WORKSPACE"
 E_DIFF_BASE_UNKNOWN = "E_DIFF_BASE_UNKNOWN"
 E_HISTORY_WORKSPACE = "E_HISTORY_WORKSPACE"
+E_CHANGES_WORKSPACE = "E_CHANGES_WORKSPACE"
 E_WRITE_WORKSPACE = "E_WRITE_WORKSPACE"
 
 # v0.27 (A9 follow-up): a refusal reaches a handler's caller ONE OF TWO WAYS
@@ -955,3 +956,31 @@ def h_history(t: Target, concept_id: str, limit: int = 20,
     limit = max(1, int(limit))
     return {"id": concept_id, "count": len(rows), "events": rows[:limit],
             "problems": problems}
+
+
+def h_changes(t: Target, since: str | None = None, until: str | None = None,
+              actor: str | None = None, limit: int = 100) -> dict:
+    """`okfy changes` over MCP: the ledger rows of the whole bundle inside
+    [since, until), newest first, so an agent resuming a long session learns
+    what moved without re-reading the overview. Bounds are a bare date or an
+    RFC3339 UTC timestamp (`memory.parse_window_bound`, E_CHANGES_WINDOW
+    otherwise); every row is judged by its own `at`. `next_since` is the
+    newest `at` returned: pass it back as `since` next time (a row at exactly
+    that instant repeats; dedupe on at+event+target). Read-only."""
+    if t.is_workspace:
+        return {"error": E_CHANGES_WORKSPACE,
+                "message": f"{E_CHANGES_WORKSPACE}: changes targets a single "
+                          "bundle; point the server at a member bundle path",
+                "way_out": "point the server at the member bundle's own "
+                          "path, not the workspace"}
+    lo = memory.parse_window_bound(since, flag="since") if since else None
+    hi = memory.parse_window_bound(until, flag="until") if until else None
+    if lo is not None and hi is not None and hi < lo:
+        raise ValueError(
+            f"{memory.E_CHANGES_WINDOW}: until ({until}) is earlier than since "
+            f"({since}) — pass an until later than since, or drop one of them")
+    rows, problems = memory.changes(t.bundle, since=lo, until=hi, actor=actor)
+    rows = sorted(reversed(rows), key=lambda r: r.get("at") or "", reverse=True)
+    limit = max(1, int(limit))
+    return {"since": lo, "until": hi, "count": len(rows), "events": rows[:limit],
+            "next_since": rows[0]["at"] if rows else lo, "problems": problems}

@@ -272,6 +272,21 @@ def build_server(path: Path, journal: Path | None = None,
                                   limit=limit, proposal=proposal)
 
     @mcp.tool()
+    def okfy_changes(since: str | None = None, until: str | None = None,
+                     actor: str | None = None, limit: int = 100) -> dict:
+        """What changed in the whole bundle: the ledger rows inside
+        [since, until), newest first — {since, until, count, events: [{event,
+        action, actor, target, origin, at, proposal, channel, ...}],
+        next_since, problems}. Bounds are a bare date (2026-01-31) or an
+        RFC3339 UTC timestamp (2026-01-31T14:30:00Z); omit both for
+        everything. `limit` (default 100) caps `events`, `count` is the full
+        number. Pass `next_since` back as `since` on your next call to resume
+        where you left off. Read-only. Use it when resuming a long session
+        instead of re-reading okfy_overview."""
+        return handlers.safe_call(handlers.h_changes, target, since=since,
+                                  until=until, actor=actor, limit=limit)
+
+    @mcp.tool()
     def okfy_propose(target_id: str, action: str, note: str,
                      actor: str | None = None,
                      content: str | None = None, evidence: dict | None = None,

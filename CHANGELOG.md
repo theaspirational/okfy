@@ -46,6 +46,16 @@ whether the owner accepted or rejected it without asking. Read-only; the
 same filter `okfy changes --target` applies. `E_HISTORY_WORKSPACE` on a
 workspace.
 
+### okfy_changes: the ledger window over MCP
+
+`okfy_changes(since?, until?, actor?, limit=100)` is `okfy changes` as a tool:
+the whole bundle's ledger rows inside `[since, until)`, newest first, with
+`next_since` (the newest `at` returned) to pass back on the next call. An
+agent resuming a long session learns what moved without re-reading the
+overview. Bounds and their refusal (`E_CHANGES_WINDOW`) are the CLI's; every
+row is judged by its own `at`, never by a related event's. Read-only;
+`E_CHANGES_WORKSPACE` on a workspace.
+
 ### Stricter behaviour
 
 - **A workspace `acceptance` policy is a closed, typed mapping.** `release-check` on a

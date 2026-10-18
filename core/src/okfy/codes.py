@@ -1400,6 +1400,11 @@ CODES: dict[str, dict] = {
         "summary": "MCP okfy_diff found no committed version of the concept with the given sha256 (no git history, or bytes never committed)",
         "way_out": "okfy_show the concept and redo your change on the current text",
     },
+    "E_HISTORY_WORKSPACE": {
+        "kind": "error",
+        "summary": "MCP okfy_history was called against a workspace target — history targets a single bundle",
+        "way_out": "point the server at the member bundle's own path, not the workspace",
+    },
     "E_WRITE_WORKSPACE": {
         "kind": "error",
         "summary": "MCP okfy_write was called against a workspace target — a write targets a single member bundle",

@@ -55,9 +55,9 @@ def root(tmp_path, monkeypatch) -> Path:
     return root
 
 
-def _write(t, actor, sha, new):
+def _write(t, actor, sha, new, old="First line."):
     return handlers.h_write(t, "notes/a", actor=actor, expect_sha256=sha,
-                            patch=[{"old": "First line.", "new": new}])
+                            patch=[{"old": old, "new": new}])
 
 
 def test_base_moved_names_the_mover(root):
@@ -91,3 +91,19 @@ def test_multi_show_carries_the_frontmatter(root):
     (c,) = out["concepts"]
     assert "title: Session note A" in c["frontmatter"]
     assert c["body"].startswith("\nFirst line.") or c["body"].startswith("First line.")
+
+
+def test_history_is_the_ledger_newest_first(root):
+    t = Target(root)
+    sha0 = handlers.h_show(t, concept_id="notes/a")["sha256"]
+    first = _write(t, ACTOR_A, sha0, "Agent one.")
+    second = _write(t, ACTOR_B, first["sha256"], "Agent two.", old="Agent one.")
+    assert second["channel"] == "direct"
+    h = handlers.h_history(t, "notes/a")
+    assert h["count"] == 2 and h["problems"] == []
+    assert [e["actor"] for e in h["events"]] == [ACTOR_B, ACTOR_A]
+    assert {e["event"] for e in h["events"]} == {"accept"}
+    assert {e["origin"] for e in h["events"]} == {"agent-direct"}
+    assert h["events"][0]["at"] >= h["events"][1]["at"]
+    assert len(handlers.h_history(t, "notes/a", limit=1)["events"]) == 1
+    assert handlers.h_history(t, "notes/a", proposal="proposals/none")["events"] == []

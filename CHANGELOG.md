@@ -35,6 +35,17 @@ writer it also knows who. Nothing new is recorded; three read paths are added.
   fences, verbatim, so a reader can tell which fields a concept carries. Not
   counted against the body budget.
 
+### okfy_history: a concept's ledger rows over MCP
+
+`okfy_history(concept_id, limit=20, proposal?)` returns the rows of
+`meta/memory.jsonl` that name the concept as target, newest first — every
+proposal, accept, reject, dismiss and direct write, with actor, origin, `at`
+and the sha256s the ledger already records. `proposal` narrows to one
+proposal id, so an agent that was answered `channel: "proposal"` can see
+whether the owner accepted or rejected it without asking. Read-only; the
+same filter `okfy changes --target` applies. `E_HISTORY_WORKSPACE` on a
+workspace.
+
 ### Stricter behaviour
 
 - **A workspace `acceptance` policy is a closed, typed mapping.** `release-check` on a

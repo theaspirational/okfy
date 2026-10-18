@@ -6,7 +6,7 @@ import inspect
 import re
 from urllib.parse import unquote
 
-from okfy import federate, frontmatter, history, proposals, query as q
+from okfy import federate, frontmatter, history, memory, proposals, query as q
 from okfy.codes import CODES
 from okfy.commands.common import _archetype_for
 from okfy.index import load_index
@@ -44,6 +44,7 @@ E_PROPOSAL_PATCH_CONTENT = "E_PROPOSAL_PATCH_CONTENT"
 E_FRESH_WORKSPACE = "E_FRESH_WORKSPACE"
 E_DIFF_WORKSPACE = "E_DIFF_WORKSPACE"
 E_DIFF_BASE_UNKNOWN = "E_DIFF_BASE_UNKNOWN"
+E_HISTORY_WORKSPACE = "E_HISTORY_WORKSPACE"
 E_WRITE_WORKSPACE = "E_WRITE_WORKSPACE"
 
 # v0.27 (A9 follow-up): a refusal reaches a handler's caller ONE OF TWO WAYS
@@ -931,3 +932,26 @@ def h_diff(t: Target, concept_id: str, from_sha256: str) -> dict:
                           "current text", "sha256": current}
     return {**out, "base_commit": commit,
             "diff": history.diff_from(t.bundle, concept_id, commit)}
+
+
+def h_history(t: Target, concept_id: str, limit: int = 20,
+              proposal: str | None = None) -> dict:
+    """The ledger rows for one concept, newest first: every proposal, accept,
+    reject, dismiss or direct write that named it as target, as
+    `meta/memory.jsonl` recorded them (event, action, actor, origin, at,
+    proposal, channel, the sha256s). `proposal` narrows to one proposal id, so
+    an agent that got `channel: "proposal"` back can see whether the owner
+    accepted or rejected it. Read-only."""
+    if t.is_workspace:
+        return {"error": E_HISTORY_WORKSPACE,
+                "message": f"{E_HISTORY_WORKSPACE}: history targets a single "
+                          "bundle; point the server at a member bundle path",
+                "way_out": "point the server at the member bundle's own "
+                          "path, not the workspace"}
+    rows, problems = memory.changes(t.bundle, target=concept_id)
+    if proposal is not None:
+        rows = [r for r in rows if r.get("proposal") == proposal]
+    rows = sorted(reversed(rows), key=lambda r: r.get("at") or "", reverse=True)
+    limit = max(1, int(limit))
+    return {"id": concept_id, "count": len(rows), "events": rows[:limit],
+            "problems": problems}

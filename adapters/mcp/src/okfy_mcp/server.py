@@ -259,6 +259,19 @@ def build_server(path: Path, journal: Path | None = None,
         return handlers.safe_call(handlers.h_diff, target, concept_id, from_sha256)
 
     @mcp.tool()
+    def okfy_history(concept_id: str, limit: int = 20,
+                     proposal: str | None = None) -> dict:
+        """The concept's ledger rows, newest first: who proposed, wrote,
+        accepted or rejected what, and when — {id, count, events: [{event,
+        action, actor, origin, at, proposal, channel, ...}], problems}.
+        `limit` (default 20) caps `events`; `count` is the full number.
+        `proposal` narrows to one proposal id: pass the id an earlier
+        okfy_write or okfy_propose returned to see whether the owner has
+        accepted or rejected it. Read-only."""
+        return handlers.safe_call(handlers.h_history, target, concept_id,
+                                  limit=limit, proposal=proposal)
+
+    @mcp.tool()
     def okfy_propose(target_id: str, action: str, note: str,
                      actor: str | None = None,
                      content: str | None = None, evidence: dict | None = None,

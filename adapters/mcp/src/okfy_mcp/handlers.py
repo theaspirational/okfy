@@ -6,7 +6,7 @@ import inspect
 import re
 from urllib.parse import unquote
 
-from okfy import federate, frontmatter, proposals, query as q
+from okfy import federate, frontmatter, history, proposals, query as q
 from okfy.codes import CODES
 from okfy.commands.common import _archetype_for
 from okfy.index import load_index
@@ -42,6 +42,8 @@ E_OVERVIEW_TYPE_WORKSPACE = "E_OVERVIEW_TYPE_WORKSPACE"
 E_PROPOSE_WORKSPACE = "E_PROPOSE_WORKSPACE"
 E_PROPOSAL_PATCH_CONTENT = "E_PROPOSAL_PATCH_CONTENT"
 E_FRESH_WORKSPACE = "E_FRESH_WORKSPACE"
+E_DIFF_WORKSPACE = "E_DIFF_WORKSPACE"
+E_DIFF_BASE_UNKNOWN = "E_DIFF_BASE_UNKNOWN"
 E_WRITE_WORKSPACE = "E_WRITE_WORKSPACE"
 
 # v0.27 (A9 follow-up): a refusal reaches a handler's caller ONE OF TWO WAYS
@@ -368,6 +370,16 @@ def _h_show_one(t: Target, concept_id: str, max_chars: int,
     return out
 
 
+def _frontmatter_text(text: str) -> str:
+    """The YAML between the fences, verbatim, so a reader can tell which
+    fields a concept carries without a second call; "" without fences."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[4:end]
+    return ""
+
+
 def _h_show_many(t: Target, concept_ids: list[str], max_tokens: int,
                  session: Session | None) -> dict:
     """v0.24 (f): several concepts under ONE fair-shared body budget —
@@ -402,9 +414,11 @@ def _h_show_many(t: Target, concept_ids: list[str], max_tokens: int,
     # its text view is newline-normalized before frontmatter.parse (A6).
     bodies = []
     shas: dict[str, str] = {}
+    fronts: dict[str, str] = {}
     for cid in ok_ids:
         _, shas[cid], text = _read_concept(resolved[cid].path)
         _, body = frontmatter.parse(text)
+        fronts[cid] = _frontmatter_text(text)
         bodies.append(body)
     rendered = render.fair_share(bodies, max_tokens) if bodies else []
 
@@ -417,7 +431,7 @@ def _h_show_many(t: Target, concept_ids: list[str], max_tokens: int,
         nb, nb_omitted = _neighbours(t, resolved[cid])
         concepts.append({"id": cid, "sha256": shas[cid],
                          "view": "truncated" if truncated else "full",
-                         "body": body, "neighbours": nb,
+                         "frontmatter": fronts[cid], "body": body, "neighbours": nb,
                          "neighbours_omitted": nb_omitted})
         if session is not None:
             session.record_show(cid, shas[cid])
@@ -828,7 +842,8 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
     text is live or waiting for the owner.
 
     Every other refusal comes back as `{error, message, way_out}` and nothing
-    is written; `E_WRITE_BASE_MOVED` also carries `current_sha256`.
+    is written; `E_WRITE_BASE_MOVED` also carries `current_sha256` and, from
+    git, `changed_by`, `changed_at` and `commit` of the write that moved it.
     `evidence` is used only by the proposal fallback (default
     `agent-inference`). The ledger row of a direct write records, from this
     process's own session trace, whether the concept was shown here
@@ -855,6 +870,10 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
         env = _refusal_envelope(e)
         if env is None:
             raise
+        if env["error"] == proposals.E_WRITE_BASE_MOVED:
+            # who moved it and when, from git, so the refused writer can
+            # decide without a second call (okfy_diff shows the change)
+            env.update(history.last_change(t.bundle, concept_id))
         if env["error"] not in (proposals.E_DIRECT_LANE, proposals.E_DIRECT_DISABLED):
             return env
         out = h_propose(t, target=concept_id,
@@ -879,3 +898,36 @@ def h_fresh(t: Target, ids: dict) -> dict:
                 "way_out": "point the server at the member bundle's own "
                           "path, not the workspace"}
     return proposals.fresh(t.bundle, ids)
+
+
+def h_diff(t: Target, concept_id: str, from_sha256: str) -> dict:
+    """What changed in a concept since the version whose file sha256 the
+    caller holds (the digest okfy_show returned): a unified diff from that
+    committed version to the file on disk, plus who made the last change
+    and when (git author / `Okfy-Actor` trailer). Read-only. The base is
+    found by hashing the file's past versions, so no ledger field is needed
+    and nothing is recorded."""
+    if t.is_workspace:
+        return {"error": E_DIFF_WORKSPACE,
+                "message": f"{E_DIFF_WORKSPACE}: diff targets a single bundle; "
+                          "point the server at a member bundle path",
+                "way_out": "point the server at the member bundle's own "
+                          "path, not the workspace"}
+    c = _resolve_concept(t, concept_id)
+    _, current, _ = _read_concept(c.path)
+    out = {"id": concept_id, "from_sha256": from_sha256, "sha256": current,
+           **history.last_change(t.bundle, concept_id)}
+    if from_sha256 == current:
+        return {**out, "unchanged": True, "diff": ""}
+    commit = history.version_with_sha256(t.bundle, concept_id, from_sha256)
+    if commit is None:
+        return {"error": E_DIFF_BASE_UNKNOWN,
+                "message": f"{E_DIFF_BASE_UNKNOWN}: no committed version of "
+                          f"{concept_id} has sha256 {from_sha256} (no git "
+                          "history, or those bytes were never committed) — "
+                          "okfy_show the concept and redo your change on the "
+                          "current text",
+                "way_out": "okfy_show the concept and redo your change on the "
+                          "current text", "sha256": current}
+    return {**out, "base_commit": commit,
+            "diff": history.diff_from(t.bundle, concept_id, commit)}

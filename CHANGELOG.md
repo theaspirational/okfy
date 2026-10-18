@@ -10,6 +10,31 @@ how `okfy query` ranks a single bundle. The contributed retrieval change (the fi
 contributed subsections below) does: it moves the retrieval code digest (see there), and
 the round-19 subsection moves it a second time.
 
+### okfy_diff, and who moved the base
+
+Two agents edit one concept minutes apart; the second write is refused
+`E_WRITE_BASE_MOVED` and nothing is lost. To redo its change the refused agent
+had the new `current_sha256` and nothing else: it re-read the whole concept and
+diffed it by eye. Git already holds every version, and since commits name their
+writer it also knows who. Nothing new is recorded; three read paths are added.
+
+- **`E_WRITE_BASE_MOVED` names the mover.** The refusal also carries
+  `changed_by`, `changed_at` and `commit` of the last commit touching the file
+  (the `Okfy-Actor` trailer, else the author), from `okfy.history.last_change`.
+- **`okfy_diff(concept_id, from_sha256)`** (MCP): a unified diff from the
+  committed version whose file sha256 the caller holds to the file now, with
+  `base_commit`, `sha256` (current) and the same `changed_by`/`changed_at`.
+  The base is found by hashing the file's past versions
+  (`okfy.history.version_with_sha256`), so old ledger rows need no new field.
+  `unchanged: true` when the bytes still match; `E_DIFF_BASE_UNKNOWN` when no
+  committed version matches (no git, or bytes never committed);
+  `E_DIFF_WORKSPACE` on a workspace. `okfy_fresh` is unchanged: its map is
+  `{id: state}` by contract, so "what changed" is one `okfy_diff` call away
+  instead of a second value shape.
+- **Multi-concept `okfy_show` carries `frontmatter`**: the YAML between the
+  fences, verbatim, so a reader can tell which fields a concept carries. Not
+  counted against the body budget.
+
 ### Stricter behaviour
 
 - **A workspace `acceptance` policy is a closed, typed mapping.** `release-check` on a

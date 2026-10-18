@@ -1390,6 +1390,16 @@ CODES: dict[str, dict] = {
         "summary": "the concept file is not at the sha256 the write was made against (`--expect` / expect_sha256): it changed, was created, or was deleted since the author read it; MCP okfy_write also returns `current_sha256`",
         "way_out": "read the concept again and write against the sha256 that read returns",
     },
+    "E_DIFF_WORKSPACE": {
+        "kind": "error",
+        "summary": "MCP okfy_diff was called against a workspace target — diff targets a single bundle",
+        "way_out": "point the server at the member bundle's own path, not the workspace",
+    },
+    "E_DIFF_BASE_UNKNOWN": {
+        "kind": "error",
+        "summary": "MCP okfy_diff found no committed version of the concept with the given sha256 (no git history, or bytes never committed)",
+        "way_out": "okfy_show the concept and redo your change on the current text",
+    },
     "E_WRITE_WORKSPACE": {
         "kind": "error",
         "summary": "MCP okfy_write was called against a workspace target — a write targets a single member bundle",

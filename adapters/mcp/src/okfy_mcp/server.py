@@ -163,7 +163,7 @@ def build_server(path: Path, journal: Path | None = None,
         v0.24: pass concept_ids (a list, max 10 — more is refused as an
         error dict naming the limit) instead of concept_id to fetch several
         concepts under ONE fair-shared token budget (max_tokens, default
-        4000) — {concepts: [{id, sha256, view, body, neighbours,
+        4000) — {concepts: [{id, sha256, view, frontmatter, body, neighbours,
         neighbours_omitted}], missing: [ids not found], omitted: [ids whose
         fair share rounded to nothing]}. `view` is "full" or "truncated";
         a truncated body carries a "N tokens omitted" marker. `neighbours`
@@ -239,11 +239,24 @@ def build_server(path: Path, journal: Path | None = None,
         this session: pass {id: sha256} (sha256 as returned by okfy_show).
         Per id, one of: unchanged | changed | now-stale | unchanged-stale |
         deleted. Never writes, never touches git. Use it before relying on a
-        concept you read earlier in a long session."""
+        concept you read earlier in a long session. On `changed`,
+        okfy_diff(concept_id, from_sha256) shows what changed and who did it."""
         out = handlers.safe_call(handlers.h_fresh, target, ids)
         if jrnl is not None and "error" not in out:
             jrnl.write("fresh")
         return out
+
+    @mcp.tool()
+    def okfy_diff(concept_id: str, from_sha256: str) -> dict:
+        """What changed in a concept since the version you read: pass the
+        sha256 okfy_show (or an E_WRITE_BASE_MOVED refusal's base) gave you.
+        Returns {id, from_sha256, sha256 (current), base_commit, diff (unified,
+        from your version to the file now), changed_by, changed_at, commit (of
+        the last change)}; `unchanged: true` with an empty diff when the file
+        still has your bytes. Read-only; nothing is recorded. E_DIFF_BASE_UNKNOWN
+        when no committed version has that sha256: okfy_show and redo your
+        change on the current text."""
+        return handlers.safe_call(handlers.h_diff, target, concept_id, from_sha256)
 
     @mcp.tool()
     def okfy_propose(target_id: str, action: str, note: str,
@@ -330,7 +343,7 @@ def build_server(path: Path, journal: Path | None = None,
         persisted=true in both cases — say which one when you report it.
         A refusal returns {error, message, way_out} and writes nothing.
         E_WRITE_BASE_MOVED means the concept changed after you read it (it
-        also carries current_sha256): okfy_show it again, redo the change on
+        also carries current_sha256, changed_by and changed_at): okfy_show it again, redo the change on
         the new text, then write against the new sha256. A direct write
         cannot change the concept's type or its verified / generated / stale
         / supersedes fields — leave them as okfy_show returned them."""

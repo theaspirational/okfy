@@ -10,6 +10,28 @@ how `okfy query` ranks a single bundle. The contributed retrieval change (the fi
 contributed subsections below) does: it moves the retrieval code digest (see there), and
 the round-19 subsection moves it a second time.
 
+### okfy_overview(listing=true): the concepts as they are now
+
+An agent that keeps a standing set of concepts in front of its conversation
+has to know which concepts exist and whether the ones it holds are still the
+same bytes. `index.md` is what `okfy package` last rendered: a concept created
+through the direct lane is not in it until the owner packages again. The
+`type` listing is live but needs the type's name and carries no digest.
+
+- **`okfy_overview(listing=true, type?, max_items=50, offset=0)`** (MCP,
+  bundle only): `{concepts: [{id, type, title, description, sha256}], total,
+  listing_sha256, unreadable}` and `next_offset` while more remain, sorted by
+  id, read from the concept files. Each file is read once; `sha256` is the
+  digest `okfy_show` returns and `okfy_write` expects. `unreadable` names
+  files that could not be listed, so the listing is complete only when it is
+  empty. `listing_sha256` covers every listed id and sha256, not the page.
+  Read-only; no index is built. `E_OVERVIEW_LISTING_WORKSPACE`,
+  `E_OVERVIEW_LISTING_SHARD`, `E_OVERVIEW_LISTING_PAGE`.
+- Nothing else changes: without `listing` every `okfy_overview` response is
+  what it was, and `okfy_show`, `okfy_write`, `okfy_fresh`, `okfy_diff`,
+  `okfy_history` and `okfy_changes` are untouched.
+- `adapters/mcp/README.md` now counts the eleven tools the server registers.
+
 ### okfy_diff, and who moved the base
 
 Two agents edit one concept minutes apart; the second write is refused

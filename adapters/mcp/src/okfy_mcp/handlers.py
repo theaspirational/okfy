@@ -91,6 +91,10 @@ E_OVERVIEW_SHARD_WORKSPACE = "E_OVERVIEW_SHARD_WORKSPACE"
 E_OVERVIEW_SHARD_TYPE = "E_OVERVIEW_SHARD_TYPE"
 E_OVERVIEW_PAGE = "E_OVERVIEW_PAGE"
 E_SHOW_IS_SHARD = "E_SHOW_IS_SHARD"
+# okfy_overview(listing=true): the live structured listing (`_listing`).
+E_OVERVIEW_LISTING_WORKSPACE = "E_OVERVIEW_LISTING_WORKSPACE"
+E_OVERVIEW_LISTING_SHARD = "E_OVERVIEW_LISTING_SHARD"
+E_OVERVIEW_LISTING_PAGE = "E_OVERVIEW_LISTING_PAGE"
 
 # The resident index's shard links — the same regex family as core
 # validate._check_index_shard. The percent-decoded targets are the ONLY
@@ -622,9 +626,79 @@ def _stale_keys(bundle, served: dict[str, bytes] | None = None) -> dict:
     return {}
 
 
+def _listing(t: Target, type_: str | None, max_items, offset) -> dict:
+    """The live structured listing: every concept file in the bundle as it is
+    on disk NOW, `{id, type, title, description, sha256}`, sorted by id.
+
+    `index.md` is what `okfy package` last rendered: a concept an agent
+    created through the direct lane is not in it until the owner packages
+    again (the response says `stale: true`, and the way out is an owner
+    command). The `type` listing is live but needs the type's name and
+    carries no digest. A reader that must know which concepts exist now, and
+    whether the ones it holds are still the same bytes, has neither; this
+    answers both from one scan.
+
+    Each file is read exactly ONCE (`_read_concept`): `sha256` (the digest
+    okfy_show returns and okfy_write expects) and the three frontmatter
+    fields are derivations of that same capture. A file that cannot be
+    listed (not UTF-8, frontmatter that does not parse, gone mid-scan) is
+    named in `unreadable` instead of being dropped silently, so the listing
+    is complete iff `unreadable` is empty. Proposals and drafts are not
+    concepts and are not listed; `meta/` concepts are, as in the `type`
+    listing and okfy_show. `listing_sha256` covers the whole filtered
+    set (`<id>\t<sha256>\n` per concept, in order), not the page: equal
+    across two calls means no listed concept was added, removed or changed
+    between them, which is how a caller tells its pages belong together.
+    Read-only; no index is built and nothing is written."""
+    if t.is_workspace:
+        raise ValueError(
+            f"{E_OVERVIEW_LISTING_WORKSPACE}: the listing is a single-bundle "
+            "view; a workspace has no one set of concept files — point the "
+            "server at a member bundle's own path, not the workspace")
+    for name, v, lo in (("offset", offset, 0), ("max_items", max_items, 1)):
+        if isinstance(v, bool) or not isinstance(v, int) or v < lo:
+            raise ValueError(
+                f"{E_OVERVIEW_LISTING_PAGE}: {name} must be an integer >= "
+                f"{lo}, got {v!r} — pass offset >= 0 (a next_offset from a "
+                "previous page) and max_items >= 1")
+    entries: list[dict] = []
+    unreadable: list[str] = []
+    for path in t.bundle.iter_md_files():
+        cid = t.bundle.concept_id(path)
+        try:
+            _, sha, text = _read_concept(path)
+            meta, _ = frontmatter.parse(text)
+        except (OSError, UnicodeDecodeError, frontmatter.FrontmatterError):
+            unreadable.append(cid)
+            continue
+        if type_ is not None and meta.get("type") != type_:
+            continue
+        entries.append({"id": cid, "type": meta.get("type"),
+                        "title": meta.get("title", ""),
+                        "description": meta.get("description", ""),
+                        "sha256": sha})
+    entries.sort(key=lambda e: e["id"])
+    digest = hashlib.sha256("".join(
+        f"{e['id']}\t{e['sha256']}\n" for e in entries).encode("utf-8"))
+    end = offset + max_items
+    out = {"concepts": entries[offset:end], "total": len(entries),
+           "listing_sha256": digest.hexdigest(), "unreadable": sorted(unreadable)}
+    if end < len(entries):
+        out["next_offset"] = end
+    return out
+
+
 def h_overview(t: Target, type_: str | None = None, max_items: int = 50,
                max_chars: int = 20000, shard: str | None = None,
-               offset: int = 0) -> dict:
+               offset: int = 0, listing: bool = False) -> dict:
+    if listing:
+        if shard is not None:
+            raise ValueError(
+                f"{E_OVERVIEW_LISTING_SHARD}: listing and shard are mutually "
+                "exclusive (a shard is a page of generated text, the listing "
+                "is read from the concept files) — pass either listing or "
+                "shard, not both")
+        return _listing(t, type_, max_items, offset)
     if shard is not None:
         if t.is_workspace:
             raise ValueError(

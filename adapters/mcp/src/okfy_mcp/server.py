@@ -266,7 +266,7 @@ def build_server(path: Path, journal: Path | None = None,
     @mcp.tool()
     def okfy_overview(type: str | None = None, max_items: int = 50,
                       max_chars: int = 20000, shard: str | None = None,
-                      offset: int = 0) -> dict:
+                      offset: int = 0, listing: bool = False) -> dict:
         """The bundle's index (or the workspace's member list). Read this first
         for progressive disclosure — never bulk-read concepts. With no type
         and no shard, returns the index text as `index`: the exact slice
@@ -285,10 +285,24 @@ def build_server(path: Path, journal: Path | None = None,
         shard is exclusive with type and works on a single bundle only. With
         type (bundle only; a workspace raises), returns a structured listing
         {concepts:[{id,type,title,description}], total} capped at max_items
-        (default 50) while total reports the full count for that type."""
+        (default 50) while total reports the full count for that type.
+
+        listing=true (bundle only): the concepts as they are on disk NOW,
+        not the packaged index text, which does not show a concept created
+        after the owner last ran `okfy package`. Returns {concepts: [{id,
+        type, title, description, sha256}], total, listing_sha256,
+        unreadable}, sorted by id; sha256 is the one okfy_show returns for
+        that concept. type narrows it; max_items (default 50) and offset
+        (counted in concepts here) page it, and next_offset appears while
+        more remain. unreadable names concept files that could not be
+        listed: the listing is complete only when it is empty.
+        listing_sha256 covers every listed id and sha256, not the page: the
+        same value on two calls means nothing listed was added, removed or
+        changed between them. meta/ concepts are listed too; proposals are
+        not. Exclusive with shard."""
         out = handlers.safe_call(handlers.h_overview, target, type_=type,
                                  max_items=max_items, max_chars=max_chars,
-                                 shard=shard, offset=offset)
+                                 shard=shard, offset=offset, listing=listing)
         if jrnl is not None and "error" not in out:
             jrnl.write("overview")
         return out

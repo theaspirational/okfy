@@ -1350,6 +1350,21 @@ CODES: dict[str, dict] = {
         "summary": "MCP okfy_overview was called with an `offset` that is not an integer >= 0 or a `max_chars` that is not an integer >= 1",
         "way_out": "pass offset >= 0 (a next_offset from a previous page) and max_chars >= 1",
     },
+    "E_OVERVIEW_LISTING_WORKSPACE": {
+        "kind": "error",
+        "summary": "MCP okfy_overview's `listing` was used against a workspace target — the live listing is a single-bundle view",
+        "way_out": "point the server at a member bundle's own path, not the workspace",
+    },
+    "E_OVERVIEW_LISTING_SHARD": {
+        "kind": "error",
+        "summary": "MCP okfy_overview was called with both `listing` and `shard` — a shard is a page of generated text, the listing is read from the concept files",
+        "way_out": "pass either listing or shard, not both",
+    },
+    "E_OVERVIEW_LISTING_PAGE": {
+        "kind": "error",
+        "summary": "MCP okfy_overview's `listing` was called with an `offset` that is not an integer >= 0 or a `max_items` that is not an integer >= 1",
+        "way_out": "pass offset >= 0 (a next_offset from a previous page) and max_items >= 1",
+    },
     "E_SHOW_IS_SHARD": {
         "kind": "error",
         "summary": "MCP okfy_show was asked for an `index/<dir>` id — a generated index shard, not a concept",

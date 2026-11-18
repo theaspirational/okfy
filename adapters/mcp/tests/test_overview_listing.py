@@ -418,3 +418,65 @@ def test_mapping_key_errors_are_frontmatter_errors_not_arbitrary_type_errors():
             frontmatter.parse(f"---\n{yaml}\n---\nBody.\n")
     assert frontmatter.parse("---\ntitle: Good\nextra: {a: b}\n---\nBody.\n")[0] == {
         "title": "Good", "extra": {"a": "b"}}
+
+
+@pytest.mark.parametrize("label,scalar", [
+    ("invalid-date", "2026-99-99"),
+    ("invalid-float", "!!float nonsense"),
+])
+def test_wire_scalar_construction_failure_is_per_file_and_recovers(root, label, scalar):
+    calls = [
+        ("okfy_overview", {"listing": True, "max_items": 1000}),
+        ("okfy_overview", {"listing": True, "type": "no-such-type"}),
+    ]
+    before = _review_wire(root, f"{label}-before", calls)
+    bad = root / "notes/bad.md"
+    bad.write_text(f"---\ntitle: {scalar}\n---\nBody.\n", encoding="utf-8")
+    full, filtered = _review_wire(root, f"{label}-bad", calls)
+    assert "error" not in full and "error" not in filtered
+    assert full["unreadable"] == filtered["unreadable"] == ["notes/bad"]
+    assert full["concepts"] == before[0]["concepts"]
+    assert "notes/a" in {c["id"] for c in full["concepts"]}
+    assert filtered["concepts"] == [] and filtered["total"] == 0
+    # Removal restores exactly the baseline, including the listing digest.
+    bad.unlink()
+    assert _review_wire(root, f"{label}-removed", calls) == before
+    # Repair also makes the same path serveable, with its real show digest.
+    bad.write_text(_concept("note", "Repaired", "Body."), encoding="utf-8")
+    repaired, nonmatching, show = _review_wire(root, f"{label}-repaired", calls + [
+        ("okfy_show", {"concept_id": "notes/bad"})])
+    assert repaired["unreadable"] == nonmatching["unreadable"] == []
+    assert nonmatching == before[1]
+    row = next(c for c in repaired["concepts"] if c["id"] == "notes/bad")
+    assert row["title"] == "Repaired"
+    assert row["sha256"] == show["sha256"] == _file_sha(root, "notes/bad")
+
+
+@pytest.mark.parametrize("scalar", ["2026-99-99", "!!float nonsense"])
+def test_scalar_construction_value_errors_are_frontmatter_errors(scalar):
+    with pytest.raises(frontmatter.FrontmatterError, match="invalid YAML") as caught:
+        frontmatter.parse(f"---\ntitle: {scalar}\n---\nBody.\n")
+    assert type(caught.value.__cause__) is ValueError
+
+
+def test_yaml_load_boundary_preserves_existing_and_unexpected_errors(monkeypatch):
+    for error in (frontmatter.FrontmatterError("original"), RuntimeError("bug")):
+        def fail(*args, **kwargs):
+            raise error
+        with monkeypatch.context() as patch:
+            patch.setattr(frontmatter.yaml, "load", fail)
+            with pytest.raises(type(error)) as caught:
+                frontmatter.parse("---\ntitle: Good\n---\nBody.\n")
+            assert caught.value is error
+
+
+def test_valid_yaml_scalar_types_are_not_normalized():
+    import datetime
+
+    meta, body = frontmatter.parse(
+        "---\ndate: 2026-11-18\nfloat: !!float 1.25\nint: 42\n"
+        "bool: true\nnullable: null\ntext: Good\nextra: [1, 2]\n---\nBody.\n")
+    assert meta == {"date": datetime.date(2026, 11, 18), "float": 1.25,
+                    "int": 42, "bool": True, "nullable": None, "text": "Good",
+                    "extra": [1, 2]}
+    assert body == "Body.\n"

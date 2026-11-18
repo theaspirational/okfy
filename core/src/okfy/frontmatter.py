@@ -45,6 +45,11 @@ _NoDuplicateLoader.add_constructor(
 
 
 def parse(text: str) -> tuple[dict, str]:
+    """Parse metadata; malformed YAML (including typed scalars) raises FrontmatterError.
+
+    Scalar constructors can raise ValueError rather than yaml.YAMLError. Normalize
+    those only at the YAML load boundary; implementation errors still propagate.
+    """
     if not text.startswith("---\n"):
         raise FrontmatterError("missing frontmatter opening '---'")
     end = text.find("\n---\n", 4)
@@ -58,7 +63,9 @@ def parse(text: str) -> tuple[dict, str]:
         body_start = end + len("\n---\n")
     try:
         meta = yaml.load(text[4:end], Loader=_NoDuplicateLoader)  # noqa: S506
-    except yaml.YAMLError as e:
+    except FrontmatterError:
+        raise  # Preserve duplicate/unhashable-key diagnostics and exception identity.
+    except (yaml.YAMLError, ValueError) as e:
         raise FrontmatterError(f"invalid YAML: {e}") from e
     if not isinstance(meta, dict):
         raise FrontmatterError("frontmatter is not a mapping")

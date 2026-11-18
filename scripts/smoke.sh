@@ -14,7 +14,8 @@
 set -euo pipefail
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# a step below chmods a directory to 000; make sure rm can always get in
+trap 'chmod -R u+rwx "$WORK" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 CORPUS="$WORK/corpus"
 BUNDLE="$WORK/widget-okf"
 mkdir -p "$CORPUS"
@@ -478,5 +479,266 @@ with TestClient(app, base_url="http://127.0.0.1:8765") as client:
     assert gap(client, mint("okfy:read", [], kid="k1"), "smoke: k1")[0] == 401, \
         "a token signed by the retired k1 was accepted"
 PY
+
+# ---------------------------------------------------------------------------
+# Installed-artifact negatives (round 23). Public CI runs this script and never
+# the unit suite, so a defect the suite pins must be pinned here too, against the
+# INSTALLED commands, or it can come back unseen. Each step prints
+# `SMOKE NEG <id>: ...` before it runs and `SMOKE NEG <id>: PASS` after. A failure
+# that starts `NEG <id> setup:` is a broken fixture; one that starts `NEG <id>:`
+# is the owning assertion, i.e. the bug is back. Everything lives under $WORK.
+# ---------------------------------------------------------------------------
+
+step "NEG row-local (R23-4): a stale proposed twin must not hide an accepted endpoint diagnostic"
+echo "SMOKE NEG row-local: accepted dangling relation + stale proposed twin, pre-edit via the workspace"
+RL="$WORK/neg-rowlocal"
+RL_CORPUS="$RL/source"
+mkdir -p "$RL_CORPUS/engine" || fail "NEG row-local setup: mkdir"
+# Two member bundles (policy: constraints, kb: knowledge) as the unit fixture builds
+# them: minimal meta + concepts, each a git repo with one commit to pin.
+python - "$RL" "$RL_CORPUS" <<'PY' || fail "NEG row-local setup: could not write the member bundles"
+import sys
+from pathlib import Path
+from okfy import frontmatter
+rl, corpus = Path(sys.argv[1]), sys.argv[2]
+def put(path, meta, body="Rule evidence.\n"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(frontmatter.serialize(meta, body), encoding="utf-8")
+for name, types, governing in (("policy", ["Convention", "Decision"], ["Convention"]),
+                               ("kb", ["Module"], [])):
+    b = rl / name
+    put(b / "meta/corpus.md", {"type": "CorpusSnapshot", "corpus": corpus})
+    put(b / "meta/purpose.md", {"type": "Purpose", "preedit": {"governing_types": governing}})
+    put(b / "meta/extraction-plan.md", {"type": "ExtractionPlan", "types": types})
+for cid in ("alpha", "beta"):
+    put(rl / f"policy/conventions/{cid}.md",
+        {"type": "Convention", "title": cid, "path_scope": ["engine/"]})
+put(rl / "policy/decisions/exception.md", {"type": "Decision", "path_scope": []})
+put(rl / "kb/modules/engine.md", {"type": "Module", "path_scope": ["engine/"]})
+PY
+for m in policy kb; do
+  { git -C "$RL/$m" init -q && git -C "$RL/$m" add . \
+      && git -C "$RL/$m" commit -qm "Fixture"; } >/dev/null 2>&1 \
+    || fail "NEG row-local setup: could not commit the $m member"
+done
+okfy workspace init "$RL/workspace" --member "constraints:policy=$RL/policy" \
+  --member "knowledge:kb=$RL/kb" >/dev/null 2>"$WORK/rl-ws.err" \
+  || { cat "$WORK/rl-ws.err"; fail "NEG row-local setup: okfy workspace init (pins the members)"; }
+cat > "$WORK/rl-rows.py" <<'PY'
+import sys
+from pathlib import Path
+from okfy import frontmatter
+ws, which = Path(sys.argv[1]), sys.argv[2]
+A, G = "policy:conventions/alpha", "policy:conventions/never-existed"
+D = "policy:decisions/exception"
+base = {"src": A, "rel": "conflicts", "dst": G, "origin": "owner", "scope": ["engine/"]}
+rows = {
+    "accepted": {**base, "status": "accepted", "reason": "Fresh accepted declaration"},
+    "proposed": {**base, "status": "proposed", "reason": "Stale proposed declaration",
+                 "resolution": {"decision": D, "scope": ["engine/"]}},
+}
+(ws / "links").mkdir(exist_ok=True)
+(ws / "links" / f"{which}.md").write_text(
+    frontmatter.serialize({"type": "Crosswalk", "rows": [rows[which]]}, "Smoke row.\n"),
+    encoding="utf-8")
+PY
+rl_preedit() {   # $1 = output file; the lookup itself must succeed, whatever it answers
+  okfy preedit "$RL/workspace" engine/run.py --root "$RL_CORPUS" > "$1" 2>"$WORK/rl-pre.err" \
+    || { cat "$WORK/rl-pre.err"; fail "NEG row-local setup: okfy preedit exited non-zero"; }
+}
+python "$WORK/rl-rows.py" "$RL/workspace" accepted \
+  || fail "NEG row-local setup: could not write links/accepted.md"
+# The decision concept moves by a REAL commit after the pin: the pinned workspace
+# entry still names the old SHA, so a row citing it as its resolution is stale.
+printf '\nChanged after owner review.\n' >> "$RL/policy/decisions/exception.md"
+{ git -C "$RL/policy" add decisions/exception.md \
+    && git -C "$RL/policy" commit -qm "Move the decision"; } >/dev/null 2>&1 \
+  || fail "NEG row-local setup: could not commit the moved decision"
+rl_preedit "$WORK/rl-alone.json"
+RL_ALONE_MSG="NEG row-local setup: the accepted dangling relation alone is not flagged (complete=true), so the twin assertion would be vacuous"
+python - "$WORK/rl-alone.json" <<'PY' || fail "$RL_ALONE_MSG"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["complete"] is False and "invalid_relation" in d["incomplete_reasons"], d
+PY
+python "$WORK/rl-rows.py" "$RL/workspace" proposed \
+  || fail "NEG row-local setup: could not write links/proposed.md"
+rl_preedit "$WORK/rl-twin.json"
+RL_TWIN_MSG="NEG row-local: a stale proposed twin hid the accepted endpoint diagnostic (complete=true, or no invalid_relation / endpoint_missing:dst)"
+python - "$WORK/rl-twin.json" <<'PY' || fail "$RL_TWIN_MSG"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["complete"] is False, (d["complete"], d["incomplete_reasons"], d["excluded_relations"])
+assert "invalid_relation" in d["incomplete_reasons"], d["incomplete_reasons"]
+assert any(e["reason"] == "endpoint_missing:dst" for e in d["excluded_relations"]), \
+    d["excluded_relations"]
+PY
+echo "SMOKE NEG row-local: PASS"
+
+step "NEG capture (R23-2): a corpus whose .git names a gitdir with a non-UTF-8 byte"
+echo "SMOKE NEG capture: okfy validate on the gitfile 'gitdir: missing-<0xff>' must report W_CORPUS_SHA"
+CC="$WORK/neg-capture/corpus"
+CB="$WORK/neg-capture/bundle"
+mkdir -p "$CC" || fail "NEG capture setup: mkdir"
+printf '# Keep\n\nOne tracked note.\n' > "$CC/keep.md"
+{ git -C "$CC" init -q && git -C "$CC" add . && git -C "$CC" commit -qm "initial"; } \
+  >/dev/null 2>&1 || fail "NEG capture setup: could not commit the corpus"
+okfy init "$CB" --corpus "$CC" --language en >/dev/null 2>"$WORK/cap-init.err" \
+  || { cat "$WORK/cap-init.err"; fail "NEG capture setup: okfy init on the git corpus"; }
+grep -q 'git_sha' "$CB/meta/corpus.md" \
+  || fail "NEG capture setup: the snapshot recorded no git_sha, so validate has nothing to verify"
+mv "$CC/.git" "$WORK/neg-capture/saved-git" \
+  || fail "NEG capture setup: could not move the real .git aside"
+printf 'gitdir: missing-\377\n' > "$CC/.git" \
+  || fail "NEG capture setup: could not write the gitfile"
+set +e
+okfy validate "$CB" > "$WORK/cap-validate.out" 2>"$WORK/cap-validate.err"
+CAPRC=$?
+set -e
+if grep -q 'Traceback' "$WORK/cap-validate.err"; then
+  tail -8 "$WORK/cap-validate.err"
+  fail "NEG capture: okfy validate raised a traceback on git's non-UTF-8 stderr"
+fi
+CAP_MSG="NEG capture: okfy validate did not print a JSON report naming W_CORPUS_SHA for a gitfile with a non-UTF-8 byte (rc $CAPRC; the decode error became a bare refusal)"
+python - "$WORK/cap-validate.out" <<'PY' || fail "$CAP_MSG"
+import json, sys
+out = open(sys.argv[1], "rb").read()
+assert out.strip(), "empty stdout"
+codes = [f["code"] for f in json.loads(out)["findings"]]
+assert "W_CORPUS_SHA" in codes, codes
+PY
+echo "SMOKE NEG capture: PASS"
+
+step "NEG stat (R23-3): a tracked file in a directory that cannot be searched"
+echo "SMOKE NEG stat: okfy init must refuse with E_CORPUS_LISTING, no traceback, and create nothing"
+SC="$WORK/neg-stat/corpus"
+SB="$WORK/neg-stat/new-bundle"
+mkdir -p "$SC/private-dir" || fail "NEG stat setup: mkdir"
+printf '# Keep\n' > "$SC/keep.md"
+printf 'evidence\n' > "$SC/private-dir/evidence.md"
+printf 'private-dir/\n' > "$SC/.gitignore"
+# tracked first, ignored after: git still lists the file (exit 0, empty stderr)
+{ git -C "$SC" init -q && git -C "$SC" add .gitignore keep.md \
+    && git -C "$SC" add -f private-dir/evidence.md && git -C "$SC" commit -qm "initial"; } \
+  >/dev/null 2>&1 || fail "NEG stat setup: could not commit the corpus"
+STAT_SKIP=""
+if [ "$(id -u)" -eq 0 ]; then
+  STAT_SKIP="effective uid is 0: mode bits do not stop stat"
+else
+  chmod 000 "$SC/private-dir" || fail "NEG stat setup: chmod 000"
+  if [ -r "$SC/private-dir/evidence.md" ] || ls "$SC/private-dir" >/dev/null 2>&1; then
+    STAT_SKIP="this filesystem does not enforce mode bits"
+  fi
+fi
+if [ -n "$STAT_SKIP" ]; then
+  chmod 755 "$SC/private-dir" 2>/dev/null || true
+  echo "SMOKE NEG stat: SKIP ($STAT_SKIP)"
+else
+  set +e
+  okfy init "$SB" --corpus "$SC" --language en > "$WORK/stat-init.out" 2>"$WORK/stat-init.err"
+  STATRC=$?
+  set -e
+  chmod 755 "$SC/private-dir" || fail "NEG stat setup: could not restore the directory mode"
+  if grep -q 'Traceback' "$WORK/stat-init.err"; then
+    tail -8 "$WORK/stat-init.err"
+    fail "NEG stat: okfy init raised a traceback on an unstattable corpus entry"
+  fi
+  cat "$WORK/stat-init.out" "$WORK/stat-init.err" > "$WORK/stat-init.all"
+  grep -q 'E_CORPUS_LISTING' "$WORK/stat-init.all" \
+    || { cat "$WORK/stat-init.all"; fail "NEG stat: okfy init did not refuse with E_CORPUS_LISTING (rc $STATRC)"; }
+  [ ! -e "$SB" ] || fail "NEG stat: okfy init refused but still created the bundle"
+  echo "SMOKE NEG stat: PASS"
+fi
+
+step "NEG embed (vsov/okfy#11, #13): deleted drafts of an --embed bundle are read from git"
+echo "SMOKE NEG embed: merge-audit must read both drafts; release-check must refuse a draft that does not parse and one no commit holds"
+# `git show <rev>:<path>` reads <path> from the repository root, and an --embed
+# bundle sits below it, so every draft read failed. recover_drafts still said
+# 'git', and release-check, which looked only at that state, passed its
+# recoverability check without reading a single draft. A committed draft whose
+# frontmatter does not parse was passed the same way, in any bundle.
+EC="$WORK/neg-embed/corpus"
+EB="$EC/kb"
+mkdir -p "$EC" || fail "NEG embed setup: mkdir"
+printf '# App\n\nOne tracked note.\n' > "$EC/app.md"
+{ git -C "$EC" init -q && git -C "$EC" add . && git -C "$EC" commit -qm "initial"; } \
+  >/dev/null 2>&1 || fail "NEG embed setup: could not commit the corpus"
+okfy init "$EB" --corpus "$EC" --embed --language en >/dev/null 2>"$WORK/emb-init.err" \
+  || { cat "$WORK/emb-init.err"; fail "NEG embed setup: okfy init --embed"; }
+grep -q 'dissent: required' "$EB/meta/purpose.md" \
+  || fail "NEG embed setup: --embed no longer requires dissent, so release-check would skip the check"
+mkdir -p "$EB/drafts/segment-01" "$EB/glossary"
+for d in gamma-a gamma-b; do
+  printf -- '---\ntype: GlossaryTerm\ntitle: Gamma\nsources: [app.md]\n---\n\nDraft %s.\n' "$d" \
+    > "$EB/drafts/segment-01/$d.md"
+done
+# committed with the others; no merge_map names it until the unparsed check below
+printf -- '---\ntype: GlossaryTerm\ntitle: [unclosed\n---\n\nDraft gamma-bad.\n' \
+  > "$EB/drafts/segment-01/gamma-bad.md"
+{ git -C "$EC" add . && git -C "$EC" commit -qm "extract: three drafts"; } >/dev/null 2>&1 \
+  || fail "NEG embed setup: could not commit the drafts"
+printf -- '---\ntype: GlossaryTerm\ntitle: Gamma\nsources: [app.md]\n---\n\nGamma.\n' \
+  > "$EB/glossary/gamma.md"
+rm -rf "$EB/drafts"
+{ git -C "$EC" add -A && git -C "$EC" commit -qm "consolidate: 1 concept from 2 drafts"; } \
+  >/dev/null 2>&1 || fail "NEG embed setup: could not commit the consolidation"
+emb_ledger() {   # $1 = run id, $2 = merge map
+  okfy ledger add "$EB" --run "$1" --segment consolidation --inputs app.md \
+    --prompt-version consolidate@1 --outputs glossary/gamma --validation ok \
+    --merge-map "$2" >/dev/null 2>"$WORK/emb-ledger.err" \
+    || { cat "$WORK/emb-ledger.err"; fail "NEG embed setup: okfy ledger add ($1)"; }
+}
+emb_ledger run-1 "drafts/segment-01/gamma-a=glossary/gamma,drafts/segment-01/gamma-b=glossary/gamma"
+[ "$(git -C "$EB" rev-parse --show-prefix)" = "kb/" ] \
+  || fail "NEG embed setup: the bundle is not a subdirectory of its repository"
+[ ! -e "$EB/.git" ] || fail "NEG embed setup: the bundle has a repository of its own"
+okfy merge-audit "$EB" --json > "$WORK/emb-audit.json" 2>"$WORK/emb-audit.err" \
+  || { cat "$WORK/emb-audit.err"; fail "NEG embed setup: okfy merge-audit exited non-zero"; }
+EMB_AUDIT_MSG="NEG embed: merge-audit did not read the deleted drafts of an --embed bundle from git"
+python - "$WORK/emb-audit.json" <<'PY' || fail "$EMB_AUDIT_MSG"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["recovery"] == "git" and d["groups_total"] == 1, d
+assert d["unverifiable"] == [], d["unverifiable"]
+PY
+emb_dissent() {   # $1 = output file; release-check is red either way, only its dissent lines count
+  set +e
+  okfy release-check "$EB" > "$1" 2>"$WORK/emb-release.err"
+  set -e
+  python -c 'import json, sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null \
+    || { cat "$1" "$WORK/emb-release.err"; fail "NEG embed setup: release-check printed no JSON report"; }
+}
+emb_dissent "$WORK/emb-release.json"
+# Readable drafts: the check moves on to adjudication, which nothing has done yet.
+grep -q 'E_REL_DISSENT_UNADJUDICATED' "$WORK/emb-release.json" \
+  && ! grep -q 'E_REL_DISSENT_UNVERIFIABLE' "$WORK/emb-release.json" \
+  || { cat "$WORK/emb-release.json"; fail "NEG embed setup: release-check did not reach adjudication with readable drafts"; }
+# Two drafts a merge group can name that recovery cannot hand back, while its
+# state still says 'git' (the deletion commit is found): one committed with
+# frontmatter that does not parse (#13), and one no commit ever held. Each gets
+# its own copy of the corpus, because the ledger only grows: once one of them is
+# in the merge map, the other could not turn the gate red on its own.
+emb_unverifiable() {   # $1 = report, $2 = the draft the refusal must name
+  python - "$1" "$2" <<'PY'
+import json, sys
+problems = json.load(open(sys.argv[1]))["problems"]
+assert any(p.startswith("E_REL_DISSENT_UNVERIFIABLE") and sys.argv[2] in p
+           for p in problems), problems
+PY
+}
+EMB_DEL="$(git -C "$EB" log -n 1 --format=%H --diff-filter=D -- 'drafts/*')"
+git -C "$EB" show "$EMB_DEL^:./drafts/segment-01/gamma-bad.md" >/dev/null 2>&1 \
+  || fail "NEG embed setup: the unparsable draft is not in the commit before the deletion"
+cp -R "$EC" "$WORK/neg-embed/corpus-missing" || fail "NEG embed setup: could not copy the corpus"
+emb_ledger run-2 "drafts/segment-01/gamma-bad=glossary/gamma"
+emb_dissent "$WORK/emb-unparsed.json"
+emb_unverifiable "$WORK/emb-unparsed.json" drafts/segment-01/gamma-bad \
+  || fail "NEG embed: release-check passed the dissent check with a committed draft whose frontmatter does not parse"
+EB="$WORK/neg-embed/corpus-missing/kb"
+emb_ledger run-2 "drafts/segment-01/gamma-c=glossary/gamma"
+emb_dissent "$WORK/emb-missing.json"
+emb_unverifiable "$WORK/emb-missing.json" drafts/segment-01/gamma-c \
+  || fail "NEG embed: release-check passed the dissent check with a draft no commit holds"
+echo "SMOKE NEG embed: PASS"
 
 printf '\nSMOKE OK\n'

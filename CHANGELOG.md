@@ -56,6 +56,391 @@ overview. Bounds and their refusal (`E_CHANGES_WINDOW`) are the CLI's; every
 row is judged by its own `at`, never by a related event's. Read-only;
 `E_CHANGES_WORKSPACE` on a workspace.
 
+### Deleted drafts are found across merges and in embedded bundles
+
+Contributed by @vbanas (vsov/okfy#12, vsov/okfy#14; issues vsov/okfy#10, #11, #13), with one
+neighbouring case added here. `merge-audit`, `schism` and `release-check` all read the
+pre-consolidation drafts through the same lookup.
+
+- **A merge commit no longer hides the deletion of `drafts/`.** The lookup is
+  `git log --full-history --date-order`. Before, a bundle consolidated on a branch and merged
+  with a merge commit into a line that never held `drafts/` read as `unreachable-ref`. A
+  re-extraction merged that way silently read the previous run's drafts.
+- **A merge that itself deletes `drafts/` is the deletion.** The lookup also uses
+  `--diff-merges=first-parent`. Before, such a merge was never listed, and the lookup fell back to
+  an older deletion and audited the previous run's drafts. This was true before the change
+  above too.
+- **An embedded bundle reads its drafts.** Drafts are read as `<commit>:./<draft>.md`, relative to
+  the bundle. A bundle made with `okfy init --embed` sits below its repository's root, so every
+  read missed and recovery reported `git` with no draft read.
+- **Stricter `release-check`.** Under `acceptance.dissent: required`, any draft of a merge group
+  that cannot be read or parsed now fails with `E_REL_DISSENT_UNVERIFIABLE`, naming the draft.
+  Before, the gate checked only the recovery state and passed. `merge-audit` already reported
+  these groups as unverifiable. No new codes; the retrieval and federation code digests are
+  unchanged.
+- `scripts/smoke.sh` has a `NEG embed` step and `scripts/reference-bundle.sh` two merged-history
+  checks. Each fails against the previous code.
+
+### Round 23
+
+- **R23-1:** `scripts/memory-recipe.sh` captures the selected directory without losing a trailing
+  line feed. `$(...)` strips trailing newlines, so a selected work directory whose name ended in a
+  line feed resolved to its sibling without one: with that sibling empty the recipe wrote into the
+  wrong directory, and otherwise a valid empty directory was refused. The work directory, the
+  script's own directory and the repository directory are now captured with a sentinel after the
+  substitution, so each names the directory that was selected, the "inside the OKFy repository" guard
+  compares the right paths, and a directory that cannot be entered is still refused as
+  `cannot resolve`.
+- **R23-2:** git output is decoded after its return code is read, and a commit id must be a full
+  40- or 64-digit lowercase hex line. A corpus whose `.git` file names a path with a byte that is not
+  text made `okfy snapshot --force` and `okfy validate` raise `UnicodeDecodeError`, which the CLI
+  turned into a bare exit 2 with empty stdout. They now give what the same corpus gives when the path
+  is ASCII: `okfy validate` reports `W_CORPUS_SHA` (`E_CORPUS_SHA` under `--strict-sources`) and
+  the snapshot refresh refuses with `E_CORPUS_LISTING`. The `cat-file` probe in
+  `okfy validate` reads the return code only.
+- **R23-3:** the corpus manifest classifies each entry with one `os.stat`. A listed file below a
+  path that is no longer a directory (ENOTDIR) or that is gone (ENOENT) is absent: skipped, and a
+  dangling symlink is noted. Any other failure (EACCES, ELOOP) is collected as unreadable and
+  refused with `E_CORPUS_LISTING` state `unreadable`, as in round 22; a non-regular entry is skipped
+  unread. A listed self-referential symlink (ELOOP) was dropped silently and put in the skipped
+  symlinks, and an unstattable listed entry raised `PermissionError` from `okfy init`, a traceback
+  instead of the refusal.
+- **R23-4:** staleness is keyed by a row's content, not by its `(src, rel, dst)` triple. In
+  `okfy preedit` over a workspace, a stale proposed row that shared a triple with a fresh accepted
+  row made the accepted row count as stale and drop out of the lookup, so a dangling endpoint of the
+  accepted row went unreported and the answer was `complete: true`. A row is now excluded as stale
+  only when its own canonical content (`row_fingerprint`, the sorted-key JSON of the row) equals a
+  stale row's, so a proposed row can no longer change an accepted row's completeness through the
+  freshness filter. One `row_fingerprint` serves `federate.active_rows` and the row-local `stale`
+  flag of `okfy preedit`; `n_stale` still counts the accepted rows excluded as stale.
+- **Smoke negatives:** `scripts/smoke.sh` runs three installed-artifact negatives against the wheels
+  it installs: a stale proposed twin must not hide the accepted endpoint diagnostic (R23-4), a
+  gitfile with a non-UTF-8 byte must give a JSON report naming `W_CORPUS_SHA` (R23-2), and an
+  unstattable corpus entry must be refused without a traceback (R23-3; it prints SKIP when chmod does
+  not deny). On the published `b941aa9` wheel each fails at its own assertion. The smoke now also
+  restores permissions before it removes its temporary directory.
+
+Contract changes in round 23:
+
+- None. No code, state or reason was added: R23-2 and R23-3 use the existing `W_CORPUS_SHA`,
+  `E_CORPUS_SHA` and `E_CORPUS_LISTING` (states `failed`, `partial`, `unreadable`), and R23-4 surfaces
+  through the existing `invalid_relation` and `endpoint_*` reasons. `okfy preedit` keeps
+  `coverage: declared_only` and `semantic: not_assessed`, has no `allowed` key, and a no-match is not
+  permission.
+- The federation code digest moved from `6545a557…` to `560b55bb…` (`federate.py`). Federated eval
+  runs recorded before this change read stale by the existing contract; they were not rewritten. The
+  retrieval digest is unchanged.
+- Residuals: `update._corpus_dirty_paths` still decodes git output as text; `scripts/memory-recipe.sh`
+  with `CDPATH` set and a relative argument is unchanged; the listing policy for a corpus that is a
+  subdirectory of a repository is still deferred by the owner. Round 23 is not published.
+
+### Round 22
+
+- **R22-1:** a read failure is a refusal, not an omission. A git listing that succeeds does not
+  prove the listed files can be read: `git ls-files` exits 0 with an empty stderr for a file
+  whose permissions forbid reading, and `okfy init` and `okfy snapshot --force` recorded a
+  baseline that silently lacked it. `okfy init` and `okfy snapshot` (with or without `--force`)
+  now refuse with `E_CORPUS_LISTING`, state `unreadable`, naming the unreadable paths, before
+  their first write; the init target is not created and the bundle is untouched. The same holds
+  for an unreadable file or directory in a corpus that is walked. `--force` does not turn unread
+  bytes into read ones. A healthy refresh after a wrong baseline works as before, and manifest-mode
+  `okfy diff` keeps reporting the same condition as `E_DIFF_PARTIAL_LISTING`.
+- **R22-2:** the `.git` marker at the corpus root is probed with `os.lstat`, which has three
+  answers (new `gitenv.git_marker`: absent, present, unobservable). A dangling `.git` symlink was
+  read as no marker and the corpus was walked, which put gitignored files into the manifest and
+  the plan. Now a present marker (directory, gitfile, valid or dangling symlink) selects git and a
+  git failure is `E_CORPUS_LISTING` state `failed`; a marker that cannot be observed (EACCES,
+  ELOOP) is `failed` too, never a walk. No marker is still a walk, and a corpus that is a
+  subdirectory of a repository is still walked (the owner deferred that policy).
+  `okfy validate` now reports, instead of silently skipping, a corpus whose `.git` is dangling or
+  unobservable: `W_CORPUS_SHA` (`E_CORPUS_SHA` under `--strict-sources`) on `meta/corpus.md`.
+- **R22-3:** the emptiness guard of `scripts/memory-recipe.sh` decides by directory entries, not
+  by listing text. `[ -z "$(ls -A ...)" ]` strips trailing newlines, so a work directory whose
+  only entry is named `"\n"` read as empty and the recipe ran in it. The guard now appends the
+  exit status of `ls` inside the substitution, where nothing is stripped: a failed listing is
+  still `cannot list`, a bare status means empty, and any entry (a newline-only name, a dotfile,
+  a dangling symlink) is `is not empty`. Both refusal messages are unchanged.
+- **R22-4:** an unobservable `.git` marker is not an absent one. `okfy preedit` decided "no git at
+  or above the root" with `os.path.lexists`, which is false both for a missing entry and for a
+  `stat` that failed (EACCES on a root without search permission), so a committed corpus whose
+  root could not be searched answered `head_git_sha: null`, `verified: true`, `complete: true`.
+  The probe is now `gitenv.git_marker` per level: `present` and `unobservable` both mean git may
+  be there, and only a root where every level is `absent` is non-git. Such a root is
+  refused at the root with `E_PREEDIT_ROOT` (the message names the permissions repair) before any
+  operand is resolved, never verified. A garbage HEAD under a readable root is still
+  `root_unverifiable`.
+- **R22-5:** `okfy preedit` input paths are resolved by one function that tells a missing future
+  file from a failed observation. A symlink loop, a directory without search permission or a file
+  used as a directory made non-strict `realpath` hand back the unresolved suffix, and the lookup
+  accepted it as a lexical path inside the root with `complete: true`. These operands are now
+  refused per path with `E_PREEDIT_PATH`, new reason `unresolvable_path`; a path that does not
+  exist yet (also under a missing directory), a plain `..` and an internal symlink are
+  unchanged, and `symlink_escape`, `ambiguous_dotdot` and `names_root` keep their precedence.
+- **R22-6:** git's output is read as bytes. `git rev-parse HEAD` stderr holding bytes that are not
+  text (a gitfile naming a path with a `0xff` byte) raised `UnicodeDecodeError` before the return
+  code was looked at, so the root was neither `ok` nor `unverifiable`. Stderr is decoded with
+  replacement for the note only, and stdout counts as a HEAD only when it is a 40- or 64-digit
+  lowercase hex commit id; anything else under git is `root_unverifiable`.
+- **R22-7:** the endpoint check of `okfy preedit` no longer depends on a pull. It ran only for
+  rows reached through a `constrains` pull to a destination match, so an accepted
+  `alpha constrains kb:modules/never-existed`, `alpha same-as missing` or `alpha conflicts missing`,
+  with `alpha` matching the path, vanished and the answer was `complete: true`. One function
+  (`_relevant_endpoint_problems`) now decides it: an accepted, fresh row is relevant when either
+  endpoint, or any member of its same-as class, is a matched concept, and both of its endpoints are
+  checked (`endpoint_missing:<side>` / `endpoint_unreadable:<side>`, `invalid_relation`). A row
+  with no relevant endpoint, and any proposed row, still never affects completeness; the pull and
+  its note are unchanged.
+- **R22-8:** the personal-scope filter keeps its attribution when `rel` or `status` is malformed.
+  A diagnostic for a non-string `rel` has `src`/`dst` None, so a row of a personal concept that
+  does not apply to this project passed the filter and turned the answer incomplete with a
+  file-level exclusion. The filter now reads the raw endpoints the file carried and runs before any
+  diagnostic or exclusion is built: such a row leaves the result equal to the no-row baseline except
+  for the aggregate personal-exclusion note, which names no ref. A row with a non-string endpoint
+  stays unattributable and conservative (`diagnostic:malformed_ref`, incomplete).
+
+Contract changes in round 22:
+
+- `E_CORPUS_LISTING` has a third state, `unreadable`, and its `failed` state now also covers an
+  unobservable or dangling `.git` marker at the corpus root. `okfy init` and `okfy snapshot`
+  refuse it with exit 2 before writing. (R22-1, R22-2)
+- `E_PREEDIT_PATH` has a ninth per-path reason, `unresolvable_path` (a failed physical
+  resolution: ELOOP, EACCES, ENOTDIR). `E_PREEDIT_ROOT` now also covers a corpus root whose
+  `.git` entry cannot be observed (no search permission); `root_unverifiable` also covers an
+  unobservable ancestor level and git output that is not a commit id. (R22-4, R22-5, R22-6)
+- `excluded_relations` reasons `endpoint_missing:<side>` / `endpoint_unreadable:<side>` now also
+  name relevant `same-as` and `conflicts` rows, not only `constrains`, and a row with a malformed
+  `rel`/`status` of an out-of-scope personal concept appears nowhere. (R22-7, R22-8)
+- `W_CORPUS_SHA` (`E_CORPUS_SHA` under `--strict-sources`) on `meta/corpus.md` has a new trigger: a
+  corpus whose `.git` marker is dangling or cannot be observed, which `okfy validate` used to skip.
+  (R22-2)
+- Relevance widening: an accepted `same-as` row (or `conflicts` row) with a dangling endpoint is now
+  listed in `excluded_relations` and makes the answer incomplete (`invalid_relation`) whenever
+  either endpoint, or any member of its same-as class, is a matched concept, whether or not a pull
+  was built. Before round 22 only a row reached through a `constrains` pull was checked. (R22-7)
+- Scope rule: the personal-scope filter decides from the raw endpoints the file carried, before any
+  diagnostic is built, so a malformed `rel` or `status` no longer exposes an out-of-scope personal
+  row. (R22-8)
+- Recipe guard: `scripts/memory-recipe.sh` decides that its work directory is empty by entries; a
+  directory holding only a newline-named entry is refused as `is not empty`. The two refusal
+  messages are unchanged. (R22-3)
+
+### Round 21
+
+- **R21-1:** `scripts/memory-recipe.sh` no longer lets an ambient `GIT_DIR`, `GIT_INDEX_FILE`,
+  `GIT_WORK_TREE`, object-directory or common-dir variable redirect its git calls into another
+  repository; it drops repository-location variables as `gitenv` does, before its first git call.
+- **R21-2:** a work directory the recipe cannot list is refused before anything is written,
+  instead of being taken for empty.
+- **R21-3:** a git listing that exits 0 but wrote to stderr (an unreadable untracked subtree is
+  only a warning) is a partial listing, not the whole corpus. The test is any stderr output,
+  not English text. `okfy diff` in manifest mode therefore refuses with
+  `E_DIFF_PARTIAL_LISTING` instead of reporting the unseen file as `removed`; `okfy init`,
+  `okfy snapshot`, `okfy survey` and `okfy segment` refuse with the new `E_CORPUS_LISTING`
+  before writing anything.
+- **R21-4:** a corpus whose root holds `.git` is listed by git, and a failed listing (corrupt
+  index, garbage HEAD, an empty or stray `.git`, no git executable) is the same coded refusal
+  `E_CORPUS_LISTING`, with a repair path. It no longer falls back to a filesystem walk, which
+  put gitignored files, and their digests, into the committed manifest. A corpus with no
+  `.git` at its root, or a subdirectory of a repository, is walked exactly as before.
+  `test_walk_falls_back_on_broken_git_dir` now asserts the refusal (renamed
+  `test_walk_refuses_a_broken_git_dir_with_a_coded_error`): still no crash, no longer a wider scope.
+- **R21-10:** `okfy preedit` (CLI and `okfy_preedit`, single bundle and workspace) no longer
+  reads a HEAD it could not read as a successful non-git comparison. A root with a `.git` whose
+  HEAD cannot be read (garbage HEAD, git not installed, an unborn repository) is
+  `complete: false` with the new incomplete reason `root_unverifiable` and `root.verified:
+  false`. A root with no `.git` at or above it is unchanged.
+- **R21-5:** a reported `conflicts` entry takes its status, scope, reason, resolution, staleness
+  and file from its own row. The lookup carried the resolution through a dictionary keyed by
+  `(src, rel, dst)`, so a `proposed` row (or any other row with the same refs, in the same or
+  another links file) could hand its resolution to an accepted conflict and flip it to
+  `resolved`, depending on row order. Rows now travel as row-local entries; the triple-keyed
+  `originals`, `file_of`, `hidden` and `stale_keys` are gone from `okfy preedit`.
+- **R21-6:** a resolution resolves an operand only when its scope contains it: an equal entry,
+  an ancestor directory entry, or `./`. A file scope no longer resolves a conflict over its
+  parent directory (`out_of_scope`). Overlap still decides which operands a conflict `scope`
+  reaches. New `pathscope.entry_contains`; sibling prefixes (`engine/` vs `engine2/`) never match.
+- **R21-7:** a relevant accepted `constrains` row whose source concept is missing or unreadable,
+  or whose destination or same-as class member is missing, is listed in `excluded_relations`
+  (`endpoint_missing:<side>` / `endpoint_unreadable:<side>`) and the result is incomplete with
+  `invalid_relation`. The summary note stays, but is no longer the only signal. A readable
+  linked-only constraint (`path_scope: []`) is still pulled.
+- **R21-8:** a crosswalk row whose `rel` or `status` is a list or a mapping is the named
+  diagnostic `malformed_rel` / `malformed_status` from the validating reader instead of a
+  `TypeError`, so `okfy preedit` and `okfy_preedit` answer `complete: false` with
+  `invalid_relation`. The tolerant `load_rows` (federated query, `okfy workspace status`)
+  skips such a row. No `except TypeError` was added to either surface.
+- **R21-9:** the `path_scope` grammar rejects non-canonical entries: an empty segment
+  (`src//auth/`, `src/auth//`) and a `.` segment (`src/./auth/`, `src/auth/.`). The lookup
+  compares entries to normalised operands, so such an entry could never match and read as an
+  all-clear. `okfy validate` reports `E_PATH_SCOPE`; the proposal and direct-write paths refuse
+  it; a lookup on a bundle carrying one is `invalid_path_scope`, incomplete; a crosswalk
+  `conflicts` row's `scope` (`invalid_scope`) and `resolution.scope` (`invalid_resolution`) are
+  diagnosed by the same predicate. The single entry `./`, `[]`, spaces, NFC/NFD folding and
+  duplicate detection are unchanged, and an owner's value is never rewritten.
+- **R21-11:** `okfy preedit` checks the physical target of an operand as written, before the
+  lexical fold of `..`. With `jump -> ../outside/child`, `jump/../secret.py` names
+  `outside/secret.py`, not the root's `secret.py`; it is refused per path with
+  `E_PREEDIT_PATH`, reason `symlink_escape` (the target is outside the root) or the new
+  `ambiguous_dotdot` (inside the root but not the file the folded form names: a `..` crossed a
+  symlink). Plain `a/../b.py` and an internal symlink `link/x.py` behave as before.
+
+Contract changes in round 21 (every external contract the bullets above changed):
+
+- New error code `E_CORPUS_LISTING`, with two states: `failed` (git exited non-zero, the `.git`
+  at the root is empty or damaged, or git could not be run) and `partial` (git exited 0 but
+  wrote to stderr). Raised by `okfy init`, `okfy snapshot`, `okfy survey` and `okfy segment`;
+  the CLI exits 2. There is no filesystem-walk fallback for a root that holds `.git`. (R21-3, R21-4)
+- `okfy diff` in manifest mode refuses a partial listing with the existing
+  `E_DIFF_PARTIAL_LISTING`; its meaning is unchanged. (R21-3)
+- New `okfy preedit` incomplete reason `root_unverifiable`, ordered after `snapshot_drift`, with
+  `root.verified: false`. An unborn repository counts as unverifiable. (R21-10)
+- `okfy preedit` per-path refusals (`E_PREEDIT_PATH`): `symlink_escape` is now judged on the
+  physical target of the path as written, and `ambiguous_dotdot` is new. (R21-11)
+- `path_scope` grammar: an empty segment or a `.` segment is invalid (`E_PATH_SCOPE`,
+  `invalid_path_scope`, and for crosswalk rows `invalid_scope` / `invalid_resolution`). (R21-9)
+- `okfy preedit` `excluded_relations` gains the reasons `endpoint_missing:<side>` and
+  `endpoint_unreadable:<side>` (side `src` or `dst`); they fire `invalid_relation` and are not
+  stale reasons. (R21-7)
+- Crosswalk reader diagnostics gain `malformed_rel` and `malformed_status`; the tolerant
+  `load_rows` skips such a row. (R21-8)
+- Conflict resolution: `resolution_basis: out_of_scope` now means the resolution scope does not
+  contain the operand (directed containment), and each conflict's status, resolution and
+  staleness come from its own row. (R21-5, R21-6)
+- `scripts/memory-recipe.sh`: repository-location `GIT_*` variables are dropped before the first
+  git call, and a work directory it cannot list is refused (`cannot list <dir>`) instead of being
+  taken for empty. (R21-1, R21-2)
+
+### Pre-edit lookup
+
+- **`path_scope`: where a concept applies, declared by the owner.** A concept may carry a list of
+  corpus-relative paths: an entry ending in `/` is a recursive directory prefix (whole
+  segments), an entry without it is one exact file, `./` is the whole root, `[]` means
+  reviewed and applies nowhere, and an absent key means unmapped. There is no glob language.
+  It is separate from `sources` (attribution) and from the personal `applies_to`.
+  `okfy validate` checks the grammar on every non-meta concept that carries the key, and the
+  proposal write paths refuse a malformed value before it lands. A direct-lane write
+  (`okfy_write`) cannot set or change it (`E_DIRECT_OWNER_FIELD`, summary extended).
+- **`preedit` policy block in `meta/purpose.md`.** `preedit: {governing_types: [...]}`
+  names the concept types that govern. A match is `governing` only through `path_scope` or
+  a `constrains` row, with a governing type, and (in a workspace) from a `constraints`
+  member; everything else is `advisory`. A type may not also be in `direct.types`.
+- **`okfy preedit <bundle|workspace> PATH... [--root R] [--limit N] [--offset K]` and the
+  `okfy_preedit` MCP tool.** Read-only: one `okfy-preedit@1` object, identical on both
+  surfaces, written to stdout or returned; nothing is written to the bundle and no index is
+  built. The CLI exits 0 for any result and 2 for a refusal. The MCP server now has eight
+  tools (it had seven).
+- **Completeness is explicit, and is not permission.** Every result carries `complete`,
+  `incomplete_reasons` (`unmapped`, `invalid_path_scope`, `truncated`, `snapshot_drift`,
+  `root_unverifiable`, `refused_path`, `stale_relation`, `invalid_relation`, `unsupported_member`,
+  `unreadable_concept`, `no_governing_policy`, `unresolved_conflict`) and `coverage:
+  declared_only`. `complete: true` does not mean no rule exists or that the edit is allowed,
+  and zero matches in a mapped bundle does not mean allowed. There is no `allowed` field.
+  `limit`/`offset` page the matches, and a window that leaves a governing match out is
+  `truncated`.
+- **A `conflicts` crosswalk relation and a validating reader.** An owner-declared
+  contradiction between two refs, with a required `reason` and an optional `scope` and
+  `resolution`. `crosswalk.read_rows` reports a malformed row as a named diagnostic instead of
+  dropping it; `load_rows` is unchanged, so `okfy query` and the federated query behave as
+  before. The lookup reports declared conflicts with `semantic: not_assessed`: it does not
+  judge whether two rules contradict. A stale `conflicts` row also covers its
+  `resolution.decision`, and workspace export drops a row whose decision names an
+  out-of-scope personal concept.
+- **New codes:** `E_PATH_SCOPE`, `W_PATH_SCOPE_UNRESOLVED`, `E_PREEDIT_POLICY`,
+  `E_PREEDIT_ROOT`, `E_PREEDIT_PATH`, `E_PREEDIT_PAGE`.
+- **The federation code digest changed.** `crosswalk.py`, `federate.py` and `workspace.py`
+  are in `federation_code_digest()` and all three changed, so recorded federated eval runs
+  read stale against the new code: re-run `okfy eval run <workspace>` and repeat the owner
+  checkpoint. The recorded workspace evals are historical; no run is rewritten. The retrieval
+  code digest is unchanged (`bm25.py`, `index.py`, `lexicon.py`, `query.py` are untouched).
+- **Docs and the agent protocol.** The User Guide (English and Russian) has a "Pre-edit
+  lookup" section, and the stale tool enumerations in the MCP chapter now describe all eight
+  tools. The codebase-map `AGENTS.md` template gains a short instruction (about 60 tokens in
+  the rendered resident file): run `okfy preedit` before the first edit of a subsystem, stop
+  and ask the owner when `complete` is false, and treat the result as context, not
+  permission. The lookup is an advisory preflight, not enforcement.
+
+### Fragment retrieval (opt-in)
+
+- **Source passages for the top three hits, behind a flag.** `okfy query <bundle> <text> --passages` and `okfy_query(..., passages=true, passage_tokens=N)` add a `fragment` (`concept_id`, `path`, `sha256` of the raw file bytes, 1-based `lines`, `heading_path` (the headings in force at the extract's first line, `[]` before the first heading), `spans_sections` (`true` when a heading line lies inside the extract after its first line; absent otherwise), exact `extract`) and a `passage_state` (`quoted`, `truncated`, or `none_selected` with `passage_reason`). The selector is `core/src/okfy/passages.py`. Off by default; without the flag the output is unchanged, and with it the CLI prints one JSON object instead of the bare list.
+- **A budget on fragments only.** `--passage-tokens` / `passage_tokens` is an integer from 100 to 8000, default 1200, and a hard limit on the summed fragment tokens, counted with the method named in `passage_budget.method`. The whole-response size is an estimate. Hit lists, lexicon and not-covered notes, stale marks and the existing `max_tokens` budget are never dropped to fit it.
+- **Two refusals, both before any file is read.** `E_PASSAGES_WORKSPACE` for a workspace target, since a passage reads one bundle's concept files, and `E_PASSAGE_BUDGET` for a budget that is not an integer from 100 to 8000.
+- **Ranking and federation are unchanged.** `bm25.py`, `index.py`, `lexicon.py`, `query.py` and `federate.py` are byte-unchanged, so `retrieval_code_digest()`, the federated query and the recorded evals are not affected. A fragment shares query terms with the question; it does not prove the answer.
+- **Economy is unproven.** Whether passages save tokens has not been measured; a live comparison is pending, so this release makes no cost claim.
+
+### Round 20
+
+- **`okfy migrate ids` refuses a file with other hard links.** A concept page hard-linked
+  to a file outside the bundle is neither a symlink nor outside the bundle by path, so the
+  migration rewrote the shared inode and gave the outside file an `okf_id`. Every target
+  (`meta/purpose.md` included) with `st_nlink > 1` is now refused with `E_MIGRATE_TARGET`
+  (exit 2) in the same preflight, before the first write. The inode is not detached; copy
+  the file to make it independent, then migrate. A plain copy of the same bytes still
+  migrates and leaves the original untouched.
+- **A `meta/purpose.md` symlink is refused by its own path.** The check read the Purpose
+  through `Bundle.get`, which resolves links, so `purpose.md -> other.md` inside `meta/`
+  looked like an ordinary file and the target was rewritten. The preflight now tests the
+  lexical `meta/purpose.md`. `Bundle.get` is unchanged.
+- **`okfy diff` / `okfy update` in git mode read paths from git's NUL format.** The corpus
+  diff parsed the human `git diff --name-status` output, which C-quotes a path with
+  non-ASCII, tab, LF or quote characters (the default `core.quotePath=true`), so the quoted
+  text was taken for a file name. When a directory such as `документы/` became an embedded
+  bundle, the removal list came back empty, no concept was marked affected, and `changed`
+  held a quoted marker path. It now reads `--name-status -z` (status, path, and both paths
+  of a rename), and the committed-tree listing is decoded from bytes so a CR in a name
+  survives. The result is the same under `core.quotePath=true` and `false` on the same
+  commits. Untracked or uncommitted marker files still change nothing.
+- **A declared `manifest_digest` with its manifest gone no longer lets proposals claim
+  `sources_state: checked`.** Round 19 made strict validate stop checking sources in that
+  state, but `_source_checker`, which `propose`, `write_direct` and the coverage check
+  also use, still fell back to the live corpus tree of an embedded bundle, so a proposal
+  citing a file that was never in the frozen manifest was filed as `checked`. The rule now
+  lives in `_source_checker` itself: when `meta/corpus.md` declares a non-null
+  `manifest_digest` and `meta/corpus-manifest.json` is missing, a directory, or unreadable,
+  there is no basis, so `propose` records `sources_state: unchecked` and `write_direct`
+  skips the source check (no new refusal; a source the live tree lacks is no longer
+  refused in that state either). A manifest that exists but is malformed or not a mapping
+  keeps its `E_SOURCE_MANIFEST` / `W_SOURCE_MANIFEST` report. Strict validate still reports
+  `E_MANIFEST_DIGEST` once and omits the `sources` summary. A present manifest, a legacy
+  bundle with no declaration, memory-only and exported bundles behave as before.
+  `manifest_digest: null` is recorded as a legacy opt-out, the same as an absent key: it
+  declares nothing and takes the legacy branch (no new validation, no migration).
+- **A ledger row with U+0085, U+2028 or U+2029 in a string is one row, not several.** The
+  reader of `meta/memory.jsonl` (`events` for the working tree and `events_at_head` for the
+  committed blob, one shared parser) cut the file with `str.splitlines()`, which also breaks
+  on those characters; `json.dumps(ensure_ascii=False)` writes them raw. So
+  `write_direct(..., observed={"by": "client\u2028name"})` reported `persisted: true`, the
+  file held one valid row, and the reader returned no rows and two `E_MEMORY_LINE` problems
+  (the next direct write then refused). Rows are now framed by LF only, one trailing CR is
+  dropped so a CRLF ledger still parses, and a problem names the LF line number, the same
+  numbering `ledger_prefix_check` and git use. A row without a final LF, and a real torn row
+  (`E_MEMORY_LINE`, write refused before any change), behave as before.
+- **`meta/ledger.jsonl` and `meta/dissent.jsonl` are read by LF too.** Their readers
+  (`ledger.read_rows`, `dissent.read_rows`) had the same `splitlines()` framing as the memory
+  ledger, and crashed with `JSONDecodeError` on a row whose string carried a raw U+0085,
+  U+2028 or U+2029, which their own writers emit (`ensure_ascii=False`). CRLF rows still read.
+- **`okfy index --usage --journal` reads the okfy-mcp journal by LF too.** `okfy-mcp` writes
+  journal rows with `ensure_ascii=False`; a query carrying a raw U+0085, U+2028 or U+2029
+  was split into fragments, so the row was lost and counted in `skipped_lines`. A torn
+  row is still one skipped line.
+- **The docs no longer say a signed JWT stays valid until its `exp` regardless of its key.**
+  The Round 19 entry under "okfy-mcp HTTP authorization", the `okfy-mcp` README and the
+  guide (English and Russian) said so; the runtime does not. The same unexpired token is
+  answered `200` before the issuer retires its signing key and `401` once the JWKS set is
+  re-read. One text now stands everywhere: a token is accepted only while it is signed by a
+  key in the issuer's JWKS as cached here and before its `exp`; retiring a key ends
+  acceptance of every token that key signed once the cached set is re-read (at most 300 s,
+  or sooner when a token names an unknown `kid`; newer PyJWT re-reads for that at most once
+  every 30 s); there is no per-token revocation, so to cut off one token without retiring
+  its key, wait for its `exp` and keep access tokens short-lived. No code change.
+- **The Round 19 HTTP unit fixture runs on PyJWT 2.15, not only 2.13.** It served JWKS
+  through `urllib.request.urlopen` alone and assumed an immediate re-read on an unknown
+  `kid`, so on 2.15 it hit the network seam `build_opener().open` and tripped over the
+  30 s re-read cooldown. The fixture now serves both seams, drives PyJWT's own clocks (as
+  `scripts/smoke.sh` does) and fails any other network attempt. A new test pins that the
+  same unexpired token gets `200` before the key is retired and `401` after the set is
+  re-read, while a token of the current key gets `200`. Tests only; the dependency range
+  is unchanged.
+
 ### Stricter behaviour
 
 - **A workspace `acceptance` policy is a closed, typed mapping.** `release-check` on a
@@ -80,9 +465,10 @@ row is judged by its own `at`, never by a related event's. Read-only;
 - **A signing key the issuer stops publishing is no longer trusted for the life of the
   process.** The JWKS client kept an unbounded per-key cache, with no expiry. It now relies on
   the bounded JWKS-set cache only (300 s, and a token naming an unknown `kid` re-reads the
-  set; newer PyJWT releases allow that re-read at most once every 30 s), so a retired key is refused once the set is re-read. A JWT the issuer already signed
-  stays valid until its `exp`; individual token revocation is still not offered, and the docs
-  now say so.
+  set; newer PyJWT releases allow that re-read at most once every 30 s), so a retired key is
+  refused once the set is re-read. Individual token revocation is still not offered, and the
+  docs now say so. (An earlier wording of this entry said a JWT the issuer already signed
+  stays valid until its `exp`, independent of its key; that was wrong, see Round 20.)
 
 ### Direct write and `migrate ids`: filesystem and ledger
 
@@ -122,8 +508,8 @@ row is judged by its own `at`, never by a related event's. Read-only;
 
 ### Codes
 
-- **New:** `E_MIGRATE_TARGET` (`okfy migrate ids` would write through a symlink or outside
-  the bundle).
+- **New:** `E_MIGRATE_TARGET` (`okfy migrate ids` would write through a symlink, outside
+  the bundle, or into a file with other hard links).
 - **Widened, same names:** `E_MEMORY_LINE` also stops a direct write;
   `E_REL_WS_ACCEPTANCE_INVALID` also covers a non-mapping policy
   and unknown keys; `E_REL_EVAL_INVALID` and `E_REL_WS_EVAL_INVALID` also cover a non-string
@@ -569,6 +955,32 @@ Contributed by @theaspirational (vsov/okfy#8). No version is bumped here.
   `--oidc-issuer`, where it is the token's). A `human:` actor sent through the
   direct-write lane is committed under the process's own git identity, as every
   write was before.
+
+### The corpus manifest respects `.gitignore`
+
+Contributed by @vbanas (vsov/okfy#9).
+
+- **A gitignored file no longer enters `meta/corpus-manifest.json`.** A corpus whose root
+  holds `.git` is listed with `git ls-files --cached --others --exclude-standard`, the
+  listing the plan (`segment._walk`) already read, so a private file or a build directory
+  stays out of the manifest, `okfy diff` and `manifest_digest`. Hidden paths and embedded
+  bundles are dropped as before.
+- **Same gate as the plan (added when integrating).** A corpus that is a subdirectory of a
+  repo, or has no git, is walked as before, gitignored files included, because the plan
+  walks it that way too; a corpus inside an ignored directory is therefore not listed empty.
+  A non-UTF-8 file name is a key, not a crash.
+- **One git listing for the plan and the manifest.** Both read `segment.git_listing`, so
+  they cannot disagree on which corpora are git corpora. `okfy survey` gains a `listing`
+  field (`git` or `walk`) naming the rule it used. The survey no longer raises on a file
+  name that is not UTF-8: such a name cannot be cited from a concept's frontmatter, so it
+  is reported under `skipped.undecodable` (escaped) instead of planned. The README and the
+  User Guide said every git corpus is walked with `git ls-files`; they now say a
+  subdirectory of a repository is walked directly.
+- **One-time change for existing bundles.** On a repo-root corpus with gitignored files, the
+  next `okfy diff` reports those files as removed and the next snapshot refresh drops them,
+  so `manifest_digest` changes once. On macOS, a name stored decomposed (NFD) is now keyed
+  as git reports it (precomposed), as the plan already keyed it. The retrieval and
+  federation code digests are unchanged.
 
 ## v0.29.0 — 2026-09-30
 

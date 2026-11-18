@@ -3,12 +3,16 @@ No MCP types here — server.py owns the protocol surface, this owns the logic."
 import functools
 import hashlib
 import inspect
+import os
 import re
+import stat
 from urllib.parse import unquote
 
 from okfy import federate, frontmatter, history, memory, preedit as core_preedit
 from okfy import proposals, query as q
 from okfy import passages as core_passages
+from okfy.bundle import (DRAFT_DIR, PROPOSAL_DIR, RESERVED_DIRS, RESERVED_FILES,
+                         ROOT_DOC_FILES, SKIP_DIRS)
 from okfy.codes import CODES
 from okfy.commands.common import _archetype_for
 from okfy.index import load_index
@@ -626,6 +630,73 @@ def _stale_keys(bundle, served: dict[str, bytes] | None = None) -> dict:
     return {}
 
 
+def _listing_paths(bundle, unreadable: list[str]):
+    """Listing-only discovery: surface failed subtrees, never follow links.
+
+    Keep Bundle.iter_md_files' root exclusions without changing legacy scans.
+    A trailing slash in unreadable denotes an unenumerated directory (./ for
+    the root); other entries name concept ids or refused symlink paths.
+    """
+    pending = [bundle.root]
+    excluded = SKIP_DIRS | RESERVED_DIRS | {DRAFT_DIR, PROPOSAL_DIR}
+    while pending:
+        directory = pending.pop()
+        rel_dir = directory.relative_to(bundle.root).as_posix()
+        try:
+            with os.scandir(directory) as scan:
+                children = sorted(scan, key=lambda e: e.name)
+        except OSError:
+            unreadable.append(rel_dir + "/")
+            continue
+        for entry in children:
+            path = directory / entry.name
+            if directory == bundle.root and entry.name in excluded:
+                continue
+            rel = path.relative_to(bundle.root).as_posix()
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError:
+                unreadable.append(bundle.concept_id(path) if path.suffix == ".md" else rel)
+                continue
+            if stat.S_ISDIR(mode):
+                pending.append(path)
+                continue
+            if entry.name in RESERVED_FILES:
+                continue
+            if directory == bundle.root and entry.name in ROOT_DOC_FILES:
+                continue
+            if stat.S_ISLNK(mode):
+                # Refuse even in-root links: do not inspect a target to decide
+                # whether an otherwise skipped link is an unreadable subtree.
+                unreadable.append(bundle.concept_id(path) if path.suffix == ".md" else rel + "/")
+            elif path.suffix == ".md":
+                if stat.S_ISREG(mode):
+                    yield path
+                else:
+                    unreadable.append(bundle.concept_id(path))
+
+
+def _listing_metadata(meta: dict) -> dict:
+    """Small wire policy, not arbitrary YAML-to-string conversion.
+
+    Missing type defaults to None; missing title/description default to "".
+    Present fields must be UTF-8 strings (type may also be null). Other
+    metadata is not returned and need not satisfy this listing-only policy.
+    """
+    fields = {"type": meta.get("type"), "title": meta.get("title", ""),
+              "description": meta.get("description", "")}
+    for key, value in fields.items():
+        if key == "type" and value is None:
+            continue
+        if not isinstance(value, str):
+            raise frontmatter.FrontmatterError("listing metadata must be strings")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as e:
+            raise frontmatter.FrontmatterError("listing metadata must be UTF-8") from e
+    return fields
+
+
 def _listing(t: Target, type_: str | None, max_items, offset) -> dict:
     """The live structured listing: every concept file in the bundle as it is
     on disk NOW, `{id, type, title, description, sha256}`, sorted by id.
@@ -642,13 +713,20 @@ def _listing(t: Target, type_: str | None, max_items, offset) -> dict:
     okfy_show returns and okfy_write expects) and the three frontmatter
     fields are derivations of that same capture. A file that cannot be
     listed (not UTF-8, frontmatter that does not parse, gone mid-scan) is
-    named in `unreadable` instead of being dropped silently, so the listing
-    is complete iff `unreadable` is empty. Proposals and drafts are not
-    concepts and are not listed; `meta/` concepts are, as in the `type`
-    listing and okfy_show. `listing_sha256` covers the whole filtered
-    set (`<id>\t<sha256>\n` per concept, in order), not the page: equal
-    across two calls means no listed concept was added, removed or changed
-    between them, which is how a caller tells its pages belong together.
+    named in `unreadable` instead of being dropped silently. Failed
+    directory scans are named with a trailing slash (./ for the root), as
+    are refused non-.md symlinks; .md symlinks use the concept id. No symlinks
+    are followed. Any unreadable entry means the result is incomplete, even
+    with a type filter. Empty unreadable means no detected failures, NOT an
+    atomic snapshot or a guarantee against concurrent filesystem changes.
+    Proposals and drafts are not concepts; meta/ concepts are included.
+    Returned metadata follows _listing_metadata's string/default policy.
+    `listing_sha256` covers the whole observed filtered set
+    (`<id>\t<sha256>\n` per concept, in order), not the page. Equality
+    means equal observed id/hash sets, not no intervening (ABA) changes.
+    For bounded refreshes use identical filters, require no unreadable
+    entries and matching page identities, retry changed scans, and verify
+    selected show digests separately. This is not a fence or snapshot.
     Read-only; no index is built and nothing is written."""
     if t.is_workspace:
         raise ValueError(
@@ -663,20 +741,22 @@ def _listing(t: Target, type_: str | None, max_items, offset) -> dict:
                 "previous page) and max_items >= 1")
     entries: list[dict] = []
     unreadable: list[str] = []
-    for path in t.bundle.iter_md_files():
+    for path in _listing_paths(t.bundle, unreadable):
         cid = t.bundle.concept_id(path)
         try:
+            # Bound-root check before opening; not a hostile-race closure.
+            if not path.resolve().is_relative_to(t.bundle.root):
+                unreadable.append(cid)
+                continue
             _, sha, text = _read_concept(path)
             meta, _ = frontmatter.parse(text)
+            fields = _listing_metadata(meta)
         except (OSError, UnicodeDecodeError, frontmatter.FrontmatterError):
             unreadable.append(cid)
             continue
-        if type_ is not None and meta.get("type") != type_:
+        if type_ is not None and fields["type"] != type_:
             continue
-        entries.append({"id": cid, "type": meta.get("type"),
-                        "title": meta.get("title", ""),
-                        "description": meta.get("description", ""),
-                        "sha256": sha})
+        entries.append({"id": cid, **fields, "sha256": sha})
     entries.sort(key=lambda e: e["id"])
     digest = hashlib.sha256("".join(
         f"{e['id']}\t{e['sha256']}\n" for e in entries).encode("utf-8"))

@@ -26,6 +26,10 @@ def _no_duplicates(loader, node, deep=False):
     seen = set()
     for key_node, _ in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        try:
+            hash(key)
+        except TypeError as e:
+            raise FrontmatterError("invalid YAML: unhashable mapping key") from e
         if key in seen:
             raise FrontmatterError(
                 f"duplicate frontmatter key {key!r} — YAML keeps the last and "

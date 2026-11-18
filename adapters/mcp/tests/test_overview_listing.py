@@ -266,3 +266,155 @@ def test_wire_contract_for_a_pack_reader(root, monkeypatch):
     assert _data(res[7]) == {"notes/a": "changed", "notes/b": "unchanged"}
     assert _data(res[8])["error"] == "E_OVERVIEW_LISTING_PAGE"
     assert set(_data(res[9])) == {"concepts", "total"}
+
+
+# ---- review regressions: real filesystem failures and the real serializer ----
+
+def _review_wire(root, label, calls):
+    """Retain raw serializer results when dispatched with an evidence directory."""
+    _, results = _call_all(root, calls)
+    evidence = os.environ.get("ORGASMIC_EVIDENCE_DIR")
+    if evidence:
+        (Path(evidence) / f"listing-{label}.json").write_text(json.dumps(
+            [r.model_dump(mode="json") for r in results], indent=2), encoding="utf-8")
+    return [_data(r) for r in results]
+
+
+def test_wire_denied_directory_is_incomplete_and_recovers(root):
+    # This must be a real unprivileged negative control, not a mock or a skip.
+    assert os.geteuid() != 0, "run the permission regression as an ordinary user"
+    sealed = root / "sealed"
+    sealed.mkdir()
+    (sealed / "hidden.md").write_text(_concept("note", "Hidden", "Inside."))
+    call = [("okfy_overview", {"listing": True, "max_items": 1000})]
+    before, = _review_wire(root, "permission-before", call)
+    assert before["unreadable"] == []
+    assert "sealed/hidden" in {c["id"] for c in before["concepts"]}
+    try:
+        sealed.chmod(0)
+        with pytest.raises(PermissionError):
+            list(sealed.iterdir())
+        after, filtered = _review_wire(root, "permission-denied", call + [
+            ("okfy_overview", {"listing": True, "type": "no-such-type"})])
+        assert after["unreadable"] == filtered["unreadable"] == ["sealed/"]
+        assert before["total"] == after["total"] + 1
+        assert before["listing_sha256"] != after["listing_sha256"]
+        assert "notes/a" in {c["id"] for c in after["concepts"]}
+    finally:
+        sealed.chmod(0o755)
+    recovered, = _review_wire(root, "permission-recovered", call)
+    assert recovered == before
+
+
+def test_wire_symlinks_refused_before_read_and_ordinary_files_survive(root, monkeypatch):
+    outside = root.parent / "synthetic-outside.md"
+    outside.write_text(_concept("note", "OUTSIDE SENTINEL", "Synthetic only."))
+    outside_dir = root.parent / "synthetic-directory"
+    outside_dir.mkdir()
+    (outside_dir / "hidden.md").write_text(_concept("note", "Outside dir", "Body."))
+    (root / "notes/escape.md").symlink_to(outside)
+    (root / "notes/alias.md").symlink_to(root / "notes/a.md")
+    (root / "external").symlink_to(outside_dir, target_is_directory=True)
+    (root / "internal").symlink_to(root / "notes", target_is_directory=True)
+    (root / "notes/dangling.md").symlink_to(root / "missing.md")
+    (root / "loop").symlink_to(root / "loop")
+    original = handlers._read_concept
+
+    def guarded(path):
+        assert not path.is_symlink()
+        assert path.resolve().is_relative_to(root)
+        return original(path)
+
+    monkeypatch.setattr(handlers, "_read_concept", guarded)
+    direct = _listing(Target(root), max_items=1000)
+    listing, show = _review_wire(root, "symlinks", [
+        ("okfy_overview", {"listing": True, "max_items": 1000}),
+        ("okfy_show", {"concept_id": "notes/escape"})])
+    assert listing == direct
+    assert listing["unreadable"] == [
+        "external/", "internal/", "loop/", "notes/alias", "notes/dangling", "notes/escape"]
+    assert show["error"] == "E_MCP_REFUSAL"
+    assert "OUTSIDE SENTINEL" not in json.dumps(listing)
+    assert next(c for c in listing["concepts"] if c["id"] == "notes/a")["sha256"] == _file_sha(root, "notes/a")
+
+
+@pytest.mark.parametrize("label,metadata", [
+    ("binary", "title: !!binary /w=="),
+    ("complex-key", "? [a, b]\n: value"),
+    ("date", "title: 2026-11-18"),
+    ("list", "description: [a, b]"),
+    ("mapping", "title: {a: b}"),
+    ("null-title", "title: null"),
+    ("number-type", "type: 42"),
+    ("surrogate", 'title: "\\uD800"'),
+])
+def test_wire_unsupported_listing_metadata_is_per_file(root, label, metadata):
+    # Dates/list values are intentionally unsupported by the NEW listing's
+    # string policy; this does not claim the SDK cannot serialize them.
+    (root / "notes/bad.md").write_text(f"---\n{metadata}\n---\nBody.\n")
+    full, filtered = _review_wire(root, f"metadata-{label}", [
+        ("okfy_overview", {"listing": True, "max_items": 1000}),
+        ("okfy_overview", {"listing": True, "type": "no-such-type"})])
+    assert full["unreadable"] == filtered["unreadable"] == ["notes/bad"]
+    assert "notes/a" in {c["id"] for c in full["concepts"]}
+    assert "notes/bad" not in {c["id"] for c in full["concepts"]}
+    assert filtered["concepts"] == []
+
+
+def test_wire_listing_defaults_and_excluded_directories(root):
+    (root / "notes/defaults.md").write_text("---\nother: [1, 2]\n---\nBody.\n")
+    # Root-only concept exclusions must be pruned BEFORE enumeration. Denied
+    # excluded subtrees should not make an otherwise healthy scan incomplete.
+    excluded = [root / name for name in
+                (".git", "drafts", "proposals", ".okfy-cache", "index", "protocols")]
+    for directory in excluded:
+        directory.mkdir(exist_ok=True)
+    try:
+        for directory in excluded:
+            directory.chmod(0)
+        listing, = _review_wire(root, "defaults-exclusions", [
+            ("okfy_overview", {"listing": True, "max_items": 1000})])
+        assert listing["unreadable"] == []
+        row = next(c for c in listing["concepts"] if c["id"] == "notes/defaults")
+        assert row == {"id": "notes/defaults", "type": None, "title": "",
+                       "description": "", "sha256": _file_sha(root, "notes/defaults")}
+    finally:
+        for directory in excluded:
+            directory.chmod(0o755)
+
+
+def test_listing_aba_is_not_a_history_fence(root):
+    t = Target(root)
+    before = _listing(t)
+    p = root / "notes/a.md"
+    original = p.read_bytes()
+    p.write_text(_concept("note", "Temporary", "Intervening edit."))
+    during = _listing(t)
+    p.write_bytes(original)
+    after = _listing(t)
+    assert before["listing_sha256"] != during["listing_sha256"]
+    assert before == after  # Equal observations do not prove no edit BETWEEN.
+
+
+def test_listing_discovery_keeps_legacy_concept_exclusions(root):
+    # Exclusions are root-only except reserved filenames. Do not accidentally
+    # prune nested .git/drafts or directories merely named like reserved files.
+    for rel in ("notes/.git", "notes/drafts", "log.md", "README.md"):
+        directory = root / rel
+        if directory.is_file():
+            directory.unlink()  # synthetic generated root doc, replaced by a directory
+        directory.mkdir()
+        (directory / "nested.md").write_text(_concept("note", "Nested", "Body."))
+    t = Target(root)
+    expected = sorted(t.bundle.concept_id(p) for p in t.bundle.iter_md_files())
+    listing = _listing(t, max_items=1000)
+    assert listing["unreadable"] == []
+    assert [c["id"] for c in listing["concepts"]] == expected
+
+
+def test_mapping_key_errors_are_frontmatter_errors_not_arbitrary_type_errors():
+    for yaml in ("? [a, b]\n: value", "? {a: b}\n: value", "title: A\ntitle: B"):
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.parse(f"---\n{yaml}\n---\nBody.\n")
+    assert frontmatter.parse("---\ntitle: Good\nextra: {a: b}\n---\nBody.\n")[0] == {
+        "title": "Good", "extra": {"a": "b"}}

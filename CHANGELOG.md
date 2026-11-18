@@ -23,8 +23,15 @@ through the direct lane is not in it until the owner packages again. The
   listing_sha256, unreadable}` and `next_offset` while more remain, sorted by
   id, read from the concept files. Each file is read once; `sha256` is the
   digest `okfy_show` returns and `okfy_write` expects. `unreadable` names
-  files that could not be listed, so the listing is complete only when it is
-  empty. `listing_sha256` covers every listed id and sha256, not the page.
+  failed concept ids and unenumerated directories (trailing slash). Any
+  unreadable entry means incomplete; empty is not an atomicity guarantee.
+  All symlinks are refused before reading targets. Listing metadata must be
+  UTF-8 strings (type also permits null); missing type defaults to null and
+  missing title/description to "". Unsupported values are unreadable per file.
+  Unhashable YAML mapping keys now raise FrontmatterError, not TypeError.
+  `listing_sha256` covers observed filtered ids/hashes, not the page; equality
+  is not evidence of no intervening changes. Keep identical filters, reject
+  incomplete/changed bounded refreshes and verify selected show digests.
   Read-only; no index is built. `E_OVERVIEW_LISTING_WORKSPACE`,
   `E_OVERVIEW_LISTING_SHARD`, `E_OVERVIEW_LISTING_PAGE`.
 - Nothing else changes: without `listing` every `okfy_overview` response is

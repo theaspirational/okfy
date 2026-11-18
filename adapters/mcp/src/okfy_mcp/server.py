@@ -294,12 +294,20 @@ def build_server(path: Path, journal: Path | None = None,
         unreadable}, sorted by id; sha256 is the one okfy_show returns for
         that concept. type narrows it; max_items (default 50) and offset
         (counted in concepts here) page it, and next_offset appears while
-        more remain. unreadable names concept files that could not be
-        listed: the listing is complete only when it is empty.
-        listing_sha256 covers every listed id and sha256, not the page: the
-        same value on two calls means nothing listed was added, removed or
-        changed between them. meta/ concepts are listed too; proposals are
-        not. Exclusive with shard."""
+        more remain. unreadable names failed concept ids and unenumerated
+        directories (trailing slash, ./ for root). All symlinks are refused:
+        .md links use concept ids, other links use a trailing slash. Any
+        unreadable entry means incomplete, even with a type filter. Returned
+        type is a string or null (default null); title/description are UTF-8
+        strings (default ""). Unsupported values are unreadable, not coerced.
+        listing_sha256 covers the observed filtered id/hash set, not the page.
+        Equal values mean equal observed sets, not no intervening ABA edits.
+        For a bounded refresh keep filters identical, require no unreadable
+        entries and matching page identities, retry changed scans and verify
+        selected show digests. Scans/pages are not atomic snapshots or fences;
+        even empty unreadable cannot rule out concurrent filesystem changes.
+        meta/ concepts are listed too; proposals/drafts are not.
+        Exclusive with shard."""
         out = handlers.safe_call(handlers.h_overview, target, type_=type,
                                  max_items=max_items, max_chars=max_chars,
                                  shard=shard, offset=offset, listing=listing)

@@ -16,10 +16,10 @@ from urllib.parse import quote
 
 from okfy import frontmatter, memory, proposals as p
 from okfy.actor import check_actor, utc_now
-from okfy.bundle import RESERVED_FILES, listing_paths
+from okfy.bundle import listing_paths
 from okfy.gitenv import run_git
 from okfy.ids import new_id
-from okfy.validate import LINK_RE, direct_policy, is_external, memory_profile, resolve_link
+from okfy.validate import LINK_RE, PathPolicy, checked_direct_policy, is_external, resolve_link
 
 
 def refuse(message):
@@ -46,27 +46,30 @@ def regular_path(bundle, path):
     return path
 
 
-def ordinary_path(bundle, cid):
+def ordinary_path(bundle, policy, cid):
     p._validate_write_id(bundle, cid, flag="concept-id")
     path = bundle.root / f"{cid}.md"
-    if (not cid.startswith(("core/", "notes/")) or path.name in RESERVED_FILES
-            or not all(p._ID_SEGMENT_RE.fullmatch(part) for part in cid.split("/"))):
-        refuse(f"{cid!r} is not an ordinary core/ or notes/ concept")
+    if not policy.allows_direct(cid):
+        refuse(f"{cid!r} is not a direct-write concept under the configured prefixes")
     return regular_path(bundle, path)
 
 
-def proposal_targets(bundle, action, target, successor=None):
-    """A review must name the real operand, not e.g. a symlink to DNA. Apply
+def proposal_targets(bundle, policy, action, target, successor=None):
+    """A review must name the real operand, not e.g. a symlink to a protected page. Apply
     at filing AND operator acceptance (queue files and paths can change)."""
+    if not isinstance(action, str) or action not in p.ACTIONS:
+        raise ValueError(f"{p.E_PROPOSAL_ACTION}: bad action {action!r} — use one of {sorted(p.ACTIONS)}")
     if not target and action not in ("flag", "gap"):
         refuse("memory proposals require an explicit target")
     for cid in (target, successor):
-        if cid == "dna":
+        if cid is not None and not isinstance(cid, str):
+            refuse("proposal operands must be concept IDs")
+        if cid in policy.proposal_only:
             if action in ("delete", "supersede"):
-                refuse("DNA may not be deleted or structurally replaced")
-            regular_path(bundle, bundle.root / "dna.md")
+                refuse(f"{cid} is proposal-only and may not be deleted or structurally replaced")
+            regular_path(bundle, bundle.root / f"{cid}.md")
         elif cid:
-            ordinary_path(bundle, cid)
+            ordinary_path(bundle, policy, cid)
 
 
 def minimal_metadata(cid, body):
@@ -121,7 +124,8 @@ class ReceiptConflict(ValueError):
 
 
 class Operation:
-    def __init__(self, bundle, operation_id, request):
+    def __init__(self, bundle, policy, operation_id, request):
+        self.policy = policy
         self.bundle = bundle
         self.id = str(uuid.uuid4()) if operation_id is None else operation_id
         if not isinstance(self.id, str) or not re.fullmatch(
@@ -150,11 +154,49 @@ class Operation:
                 raise
             except (KeyError, TypeError, ValueError, OSError):
                 self.result = self.uncertain()
+        else:
+            # No committed receipt. Detect interrupted writes BEFORE checking
+            # caller bases, document shape, or structural source existence.
+            self.before = {}
+            reason = self._capture_before_images()
+            if reason:
+                self.result = self.uncertain(reason)
 
-    def uncertain(self):
+    def _capture_before_images(self):
+        """Return an inspection reason, or keep the checked baseline for apply."""
+        b = self.bundle
+        for rel in (memory.MEMORY_FILE, "log.md", *(f"{cid}.md" for cid in self.expected)):
+            path = regular_path(b, b.root / rel)
+            actual = self.before[path] = path.read_bytes() if path.exists() else None
+            committed = blob(b, self.parent, rel)
+            if rel != memory.MEMORY_FILE:
+                # A crash may replace or retire a concept before even the
+                # first receipt row. Don't attribute dirty bytes to HEAD.
+                if actual != committed:
+                    return f"{rel} differs from committed bytes"
+                continue
+            # Only pending proposal rows may ride alongside a direct receipt.
+            # Even a torn/unreadable append could be an interrupted mutation.
+            baseline, live = committed or b"", actual or b""
+            if not live.startswith(baseline):
+                return "unsettled ledger: committed prefix is missing"
+            try:
+                if self.id.encode() in baseline and any(
+                        isinstance(r.get("receipt"), dict) and r["receipt"].get("id") == self.id
+                        for r in _rows(baseline)):
+                    return "receipt row without a verifiable operation commit"
+                rows = _rows(live[len(baseline):])
+            except ValueError:
+                return "unsettled ledger: unreadable rows"
+            if any(r["event"] not in ("propose", "superseded") or "receipt" in r for r in rows):
+                return "unsettled ledger: uncommitted mutation"
+        return None
+
+    def uncertain(self, reason="could not confirm commit or rollback"):
         return {"error": "E_MEMORY_UNCERTAIN", "effect": "uncertain",
-                "operation_id": self.id, "message": "could not confirm commit or rollback",
-                "way_out": "reconcile with the identical request; inspect if no receipt"}
+                "operation_id": self.id, "message": reason,
+                "way_out": "stop writes; have the owner inspect the worktree, index, ledger "
+                           "and commit history before retrying; do not rebase or use a new ID"}
 
     def verify(self, commit):
         """Proof is the new ledger receipt AND its concept transitions in one commit."""
@@ -206,37 +248,25 @@ class Operation:
     def apply(self, action, actor, changes, note="", observed=None):
         """Preflight all before-images, then apply once. Rollback only at unchanged HEAD."""
         b = self.bundle
-        log = regular_path(b, b.root / "log.md")
-        ledger = regular_path(b, b.root / memory.MEMORY_FILE)
         p._refuse_if_ledger_rewritten(b, memory.MEMORY_FILE)
         p._refuse_unreadable_ledger(b, "a memory mutation")
         if git(b, "diff", "--cached", "--name-only", "-z"):
             refuse("index not clean; owner must settle staged changes")
-        before = {}
+        before = self.before
         dirs = set()
         for cid, (old, new) in changes.items():
-            path = ordinary_path(b, cid)
-            # Absence in discovery isn't proof of absence on disk (including
-            # case-folding filesystems); compare both file and committed blob.
-            actual = path.read_bytes() if path.exists() else None
-            if actual != old:
-                p._refuse_base_moved(cid, digest(old), digest(actual))
-            if blob(b, self.parent, f"{cid}.md") != old:
-                refuse(f"{cid} base must match committed bytes (including absence)")
-            before[path] = old
+            path = ordinary_path(b, self.policy, cid)
+            if before[path] != old:
+                self.result = self.uncertain(f"{cid} changed during planning")
+                return self.result
             dirs.update(d for d in path.parents if d.is_relative_to(b.root) and not d.exists())
-        for path in (log, ledger):
-            before[path] = path.read_bytes() if path.exists() else None
-        committed_log = blob(b, self.parent, "log.md")
-        if before[log] != committed_log:
-            refuse("uncommitted log; owner inspection required")
-        # Open proposals normally leave uncommitted ledger appends. Carry those
-        # alongside our receipt, but never legitimize an interrupted direct write.
-        baseline = blob(b, self.parent, memory.MEMORY_FILE) or b""
-        live = before[ledger] or b""
-        if not live.startswith(baseline) or any(
-                row["event"] not in ("propose", "superseded") for row in _rows(live[len(baseline):])):
-            refuse("unsettled ledger; owner inspection required")
+        # Preserve the final preflight at the mutation boundary, including
+        # proposal appends: never roll back to an image we didn't start from.
+        for path, data in before.items():
+            regular_path(b, path)
+            if (path.read_bytes() if path.exists() else None) != data:
+                self.result = self.uncertain(f"{path.relative_to(b.root)} changed during planning")
+                return self.result
         versions = {cid: digest(new) for cid, (_, new) in changes.items()}
         bases = {cid: digest(old) for cid, (old, _) in changes.items()}
         if all(old == new for old, new in changes.values()):
@@ -367,21 +397,21 @@ def reorganize(bundle, *, action, source, destination, bases, actor, operation_i
                extract=None, archetype=None):
     actor = check_actor(actor)
     with p.review_lock(bundle):
-        purpose = bundle.purpose()
-        if not memory_profile(purpose) or direct_policy(purpose)[1]:
-            refuse("operator must select a valid evolutionary memory profile")
+        policy = checked_direct_policy(bundle)
+        if not isinstance(policy, PathPolicy):
+            refuse("operator must configure direct.prefixes")
         if action not in ("move", "split", "merge") or source == destination:
             refuse("choose move, split or merge between distinct ordinary ids")
         if (extract is not None) != (action == "split"):
             refuse("only split takes (and requires) an exact extract")
         for cid in {source, destination, *bases}:
-            ordinary_path(bundle, cid)
-        op = Operation(bundle, operation_id, dict(action=action, source=source,
+            ordinary_path(bundle, policy, cid)
+        op = Operation(bundle, policy, operation_id, dict(action=action, source=source,
                        destination=destination, bases=bases, extract=extract, actor=actor))
-        if op.prior:
+        if op.result:
             return op.result if "error" in op.result else {**op.result, "replayed": True}
 
-        # Enumerate active concepts including DNA and meta, fail closed on a
+        # Enumerate active concepts including protected pages and meta, fail closed on a
         # partial scan. No generated index, proposal or foreign workspace rewrite.
         unreadable = []
         docs = {}
@@ -409,7 +439,7 @@ def reorganize(bundle, *, action, source, destination, bases, actor, operation_i
         def put(cid, meta, body):
             if not body.strip():
                 refuse("empty result")
-            path = ordinary_path(bundle, cid)
+            path = ordinary_path(bundle, policy, cid)
             validate_fields(meta)
             if cid not in docs:
                 p.check_new_type(bundle, meta)
@@ -455,7 +485,7 @@ def reorganize(bundle, *, action, source, destination, bases, actor, operation_i
                 continue
             rewritten = links(body, cid, cid)
             if rewritten != body:
-                ordinary_path(bundle, cid)  # never suggest adding protected DNA to bases
+                ordinary_path(bundle, policy, cid)  # never suggest adding a protected page to bases
                 if cid not in bases:
                     refuse(f"backlink {cid} also needs its shown base, or remove the link first")
                 put(cid, meta, rewritten)

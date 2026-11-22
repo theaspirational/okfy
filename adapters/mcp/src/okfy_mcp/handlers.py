@@ -14,6 +14,7 @@ from okfy.codes import CODES
 from okfy.commands.common import _archetype_for
 from okfy.index import load_index
 from okfy.package import GENERATED_MARKER
+from okfy.validate import PathPolicy, checked_direct_policy
 from okfy_mcp import render
 from okfy_mcp.resolve import Target
 from okfy_mcp.session import Session
@@ -905,7 +906,7 @@ def h_propose(t: Target, target: str, action: str, note: str,
     try:
         return _proposal_reply(t, path, meta, distinct_from)
     except Exception:
-        if not proposals._pilot_declared(t.bundle):
+        if not isinstance(checked_direct_policy(t.bundle), PathPolicy):
             raise
         # The call to core succeeded; do not turn a subsequent presentation
         # failure (e.g. owner consumed the file) into a "nothing written" error.
@@ -969,7 +970,7 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
             note: str = "", evidence: dict | None = None,
             session: Session | None = None, operation_id: str | None = None) -> dict:
     """Write a concept against the sha256 the agent read. The bundle's
-    `direct.types` decides where it goes, not the agent: a type in the direct
+    write policy decides where it goes, not the agent. With type routing, a type in the direct
     lane lands at once (`channel: "direct"`, with the new file's `sha256`);
     anything else — and any bundle with no lane at all — is filed as a
     proposal through `h_propose` (`channel: "proposal"`), against the same
@@ -979,7 +980,7 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
     Every other refusal comes back as `{error, message, way_out}` and nothing
     is written; `E_WRITE_BASE_MOVED` also carries `current_sha256` and, from
     git, `changed_by`, `changed_at` and `commit` of the write that moved it.
-    `evidence` is used only by the proposal fallback (default
+    In type routing, `evidence` is used only by the proposal fallback (default
     `agent-inference`). The ledger row of a direct write records, from this
     process's own session trace, whether the concept was shown here
     (`target_shown`) and at this very sha256 (`base_shown`)."""

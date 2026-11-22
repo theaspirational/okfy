@@ -8,11 +8,12 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from okfy import frontmatter
-from okfy.bundle import RESERVED_DIRS, Bundle
+from okfy.bundle import RESERVED_DIRS, RESERVED_FILES, RESERVED_ID_ROOTS, ROOT_DOC_FILES, Bundle
 from okfy.ids import carries_okf_id
 from okfy.init import manifest_digest
 from okfy.lexicon import row_problems
 from okfy.pathscope import WHOLE_ROOT, nfc, path_scope_problems
+from okfy.transcript_lint import _SEGMENT
 from okfy.update import _embedded_prefix, _source_path
 from okfy.workspace import PROJECT_KEY_RE
 
@@ -534,28 +535,39 @@ def _check_write_policy(bundle: Bundle, r: Report):
               "the gate without disabling the claim")
 
 
-# The `direct` block of meta/purpose.md: concept types an agent may write
-# without review while everything else stays behind `write_policy: proposals`.
+# The `direct` block of meta/purpose.md opts into a type or path lane under
+# `write_policy: proposals`.
 # Closed for the reason `acceptance` is: a misspelled key is a lane that
 # silently never opens, or one the owner believes is narrower than it is.
-MEMORY_PROFILE = "evolutionary-memory-v1"
-DIRECT_KEYS = ("types", "profile")
+DIRECT_KEYS = ("types", "prefixes", "proposal_only")
 
 
-def memory_profile(purpose_meta: dict) -> bool:
-    return purpose_meta.get("direct") == {"profile": MEMORY_PROFILE}
+@dataclass(frozen=True)
+class PathPolicy:
+    prefixes: tuple[str, ...]     # canonical directory prefixes, including final slash
+    proposal_only: frozenset[str]
+
+    def allows_direct(self, cid: str) -> bool:
+        return _memory_name(cid) and cid.startswith(self.prefixes) and cid not in self.proposal_only
 
 
-def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str, str]]]:
-    """`(types, problems)` for a purpose's `direct` block — the ONE reader of
-    it, shared by `okfy validate` (`_check_direct`) and the writer
-    (`proposals.write_direct`), so the two cannot disagree about which types
-    the lane covers.
+def _memory_name(value, *, directory=False) -> bool:
+    if not isinstance(value, str) or value.endswith("/") != directory:
+        return False
+    parts = value.removesuffix("/").split("/")
+    if parts[0] in RESERVED_ID_ROOTS or not all(re.fullmatch(_SEGMENT, part) for part in parts):
+        return False
+    # Reserve root generated documents even on a case-folding filesystem.
+    return directory or (f"{parts[-1]}.md" not in RESERVED_FILES
+                         and all(f"{value}.md" != name.lower() for name in ROOT_DOC_FILES))
 
-    `types` is None when the block is absent or its `types` is malformed;
-    `problems` is `[(code, message)]`, each message ending in its way out. A
-    writer refuses on ANY problem: a trust boundary that is half-declared is
-    not open."""
+
+def direct_policy(
+    purpose_meta: dict,
+) -> tuple[list[str] | PathPolicy | None, list[tuple[str, str]]]:
+    """Single reader for validation, routing and guidance. No block opens no
+    lane; the legacy type list and the path policy are mutually exclusive.
+    Never use a returned lane if there are problems."""
     if "direct" not in purpose_meta:
         return None, []
     direct = purpose_meta["direct"]
@@ -580,12 +592,29 @@ def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str,
             f"unknown direct key(s) {unknown} (known: {list(DIRECT_KEYS)}) — "
             "remove them; an unrecognised key is a policy that silently does "
             "nothing"))
-    if "profile" in direct:
-        if not memory_profile(purpose_meta) or "preedit" in purpose_meta:
-            problems.append(("E_DIRECT_POLICY",
-                             f"expected direct: {{profile: {MEMORY_PROFILE}}} without "
-                             "types or preedit — memory pages cannot be governing rules"))
-        return None, problems
+    if "prefixes" in direct or "proposal_only" in direct:
+        prefixes = direct.get("prefixes")
+        exact = direct.get("proposal_only", [])
+        if "types" in direct or "preedit" in purpose_meta:
+            problems.append(("E_DIRECT_POLICY", "path routing cannot be combined with types "
+                             "or preedit — choose one routing policy"))
+        if (not isinstance(prefixes, list) or not prefixes
+                or not all(_memory_name(v, directory=True) for v in prefixes)):
+            problems.append(("E_DIRECT_POLICY", "invalid direct.prefixes — supply a nonempty list of "
+                             "non-reserved lower-kebab directory paths ending in /"))
+        if not isinstance(exact, list) or not all(_memory_name(v) for v in exact):
+            problems.append(("E_DIRECT_POLICY", "invalid direct.proposal_only — supply a list of "
+                             "non-reserved, extensionless lower-kebab concept IDs"))
+        if problems:
+            return None, problems
+        policy = PathPolicy(tuple(prefixes), frozenset(exact))
+        ordered = sorted(prefixes)
+        if (any(b.startswith(a) for a, b in zip(ordered, ordered[1:]))
+                or len(policy.proposal_only) != len(exact)
+                or any(v.startswith(policy.prefixes) for v in exact)):
+            return None, [("E_DIRECT_POLICY", "duplicate or overlapping path rules — "
+                           "choose disjoint prefixes and exact proposal-only IDs")]
+        return policy, []
     types = direct.get("types")
     if (not isinstance(types, list) or not types
             or any(not isinstance(t, str) or not t.strip() for t in types)):
@@ -596,6 +625,14 @@ def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str,
             "review, or remove `direct`"))
         return None, problems
     return list(types), problems
+
+
+def checked_direct_policy(bundle: Bundle):
+    """A mutation must never interpret an invalid policy as an absent lane."""
+    policy, problems = direct_policy(bundle.purpose())
+    if problems:
+        raise ValueError(f"{problems[0][0]}: meta/purpose.md: {problems[0][1]}")
+    return policy
 
 
 def _check_direct(bundle: Bundle, archetype, r: Report, strict: bool = False):
@@ -611,7 +648,7 @@ def _check_direct(bundle: Bundle, archetype, r: Report, strict: bool = False):
     types, problems = direct_policy(p.meta)
     for code, message in problems:
         r.add("error", code, p.id, message)
-    if not types or archetype is None:
+    if not isinstance(types, list) or not types or archetype is None:
         return
     allowed, source, declared = _declared_types(bundle, archetype)
     if not allowed:
@@ -677,10 +714,11 @@ def preedit_policy(purpose_meta: dict, declared: set | None = None
                                    f"type {sorted(declared)}, so no concept can have it and it "
                                    "governs nothing — fix the name, or declare the type in "
                                    "meta/extraction-plan.md `types`"))
-    if memory_profile(purpose_meta):
-        problems.append((code, "preedit cannot coexist with the evolutionary memory profile"))
+    direct = purpose_meta.get("direct")
+    if isinstance(direct, dict) and ("prefixes" in direct or "proposal_only" in direct):
+        problems.append((code, "preedit cannot coexist with direct path routing"))
     direct_types, _ = direct_policy(purpose_meta)
-    both = sorted(t for t in types if t in (direct_types or []))
+    both = sorted(t for t in types if isinstance(direct_types, list) and t in direct_types)
     if both:
         problems.append((code, f"type(s) {both} are in both preedit.governing_types and "
                                "direct.types: a rule whose text an agent can rewrite without "

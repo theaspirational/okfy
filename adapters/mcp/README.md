@@ -12,11 +12,11 @@ left intact wherever the owner has not said otherwise. (The CLI `okfy write` doe
 fall back: for a type the owner did not open it exits 2, `E_DIRECT_LANE`, or
 `E_DIRECT_DISABLED` when the bundle lists none.)
 
-**Opt-in pilot:** [Evolutionary agent memory](../../docs/evolutionary-memory.md)
-replaces type routing with direct `core/` and `notes/` writes, proposal-only
-`dna`, committed operation receipts, and one additional tool,
+**Opt-in alternative:** [Path-routed agent memory](../../docs/evolutionary-memory.md)
+replaces type routing with owner-configured directory prefixes and exact
+proposal-only concept IDs. It adds committed operation receipts and one tool,
 `okfy_reorganize`. The default tool and result descriptions below describe
-bundles **without** this profile.
+bundles **without** a path policy.
 
 This is a **separate package**. The MCP SDK lives here, never in core: the OKFy
 core stays PyYAML-only and portable, and the daemon carries the SDK weight in

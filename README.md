@@ -155,8 +155,8 @@ uv tool install ./adapters/mcp                              # installs `okfy-mcp
 okfy-mcp config ~/bundles/<b> --client claude-code          # prints a config snippet
 ```
 
-For an opt-in multi-user memory bundle, see the [evolutionary memory pilot](docs/evolutionary-memory.md):
-direct edits and structural operations under `core/` and `notes/`, with `dna` behind review.
+For an opt-in multi-user memory bundle, see [path-routed memory](docs/evolutionary-memory.md):
+the owner lists directories for direct edits and structural operations, and exact concepts that require review.
 
 Paste the printed block into your project's `.mcp.json`, restart the client, and
 eight tools appear: `okfy_query` / `okfy_show` / `okfy_links` / `okfy_overview` /

@@ -1,26 +1,39 @@
-# Evolutionary memory pilot (one standalone bundle)
+# Path-routed memory in a standalone OKFy bundle
 
-An **operator** selects this profile in the frontmatter of `meta/purpose.md`,
-commits the configuration and any initial concepts, and starts the normal
-MCP server on the bundle. Leave its auth/transport configuration unchanged.
+An operator can opt into direct writes and structural operations **by concept
+path** instead of by type. Configure the frontmatter of `meta/purpose.md`,
+commit it and any initial concepts, and start the normal MCP server on the
+bundle. No auth/transport changes are needed. Example (names are arbitrary):
 
 ```yaml
 write_policy: proposals
-direct: {profile: evolutionary-memory-v1}
+direct:
+  prefixes: [observations/field/, findings/]
+  proposal_only: [handbook/charter]
 ```
 
-Use this **instead of** `direct.types`, without a `preedit` policy. No init
-default changes. If using an extraction plan with declared types, include
-`Memory` to use plain-body creation. The operator can provision `dna.md`
-as an ordinary valid OKF document. Starting a server does not create it.
-Restart after changing profiles: tool registration is per server; writers
-check policy again under the native review lock.
-
-| Memory concept ID | Agent tools |
+| Rule | Agent tools |
 |---|---|
-| `core/<id>`, `notes/<id>` | Direct create/edit or structural operation; optional proposal |
-| Exactly `dna` (root `dna.md`) | Propose a create/update, or flag. No direct write, delete or structural replacement. Reviewing a proposal is a separate **operator** action. |
-| Other paths, including metadata and generated navigation | Not memory write targets. No arbitrary file or Git operation. |
+| Under a listed directory, at any depth | Direct create/edit, move/split/merge, or file a proposal. |
+| An exact `proposal_only` ID | Propose a create/update, or flag. No direct write, delete, supersession or structural replacement, including as a rewritten backlink. An operator may accept a proposed edit. |
+| Any other concept, including metadata and generated navigation | Not a target for writes, proposals or structural edits under this policy. |
+
+`prefixes` must be a nonempty list of relative directory paths ending in
+`/`. A prefix does not match the concept with the same name as the directory.
+`proposal_only` is optional (default `[]`); entries are exact concept IDs
+without a trailing slash or `.md`. Both use lower-kebab segments, not globs.
+Duplicates, nested prefixes, exact IDs under a direct prefix, noncanonical
+paths, reserved targets and unknown keys are errors. Do not combine path
+rules with `direct.types` or `preedit`. There is no named profile, folder
+template, or special concept name. Neither init nor server startup provisions
+any policy target. If the plan declares types, include `Memory` for plain-body
+creation. Restart after changing policies: tool registration is per server;
+the writers re-read the policy under the review lock.
+
+Without a path policy nothing opts in: a bundle with no direct lane keeps
+the normal proposal fallback, and `direct: {types: [...]}` keeps the existing
+type-based write behavior. Neither exposes `okfy_reorganize`. An invalid
+policy is not a fallback: repair the configuration offline before writing.
 
 IDs are extensionless lower-kebab path segments. Choose the hierarchy;
 there are no required thematic folders. Reserved names (including
@@ -41,7 +54,7 @@ the entire page: don't submit truncated text as a replacement.
 For example:
 
 ```json
-{"concept_id":"notes/experiments/reading","expect_sha256":"absent","actor":"agent:test","content":"Grain sizes differ.\n\nThe second sample was finer.","evidence":{"kind":"external-source","ref":"synthetic:sample-2"},"operation_id":"41a08102-bc83-4425-8ce6-f10362a40980"}
+{"concept_id":"observations/field/reading","expect_sha256":"absent","actor":"agent:test","content":"Grain sizes differ.\n\nThe second sample was finer.","evidence":{"kind":"external-source","ref":"synthetic:sample-2"},"operation_id":"41a08102-bc83-4425-8ce6-f10362a40980"}
 ```
 
 * `absent` means *create only*; an update requires the shown `S`. Exactly
@@ -71,7 +84,7 @@ For example:
 For example, after showing the page above, call (substitute its actual digest):
 
 ```json
-{"actor":"agent:test","action":"split","source":"notes/experiments/reading","destination":"core/sample-two","bases":{"notes/experiments/reading":"S","core/sample-two":"absent"},"extract":"The second sample was finer.","operation_id":"ef892d69-ee2d-4568-9b6a-36c906d48352"}
+{"actor":"agent:test","action":"split","source":"observations/field/reading","destination":"findings/sample-two","bases":{"observations/field/reading":"S","findings/sample-two":"absent"},"extract":"The second sample was finer.","operation_id":"ef892d69-ee2d-4568-9b6a-36c906d48352"}
 ```
 
 | Action | Destination | What changes |
@@ -92,7 +105,7 @@ for semantic synthesis; this is not a general batch replace/delete API.
 
 **Link boundary:** the live graph is OKF's existing inline body links
 (`[label](relative.md)` / `[label](/root.md#fragment)`); it isn't a full
-Markdown parser. Scan the active concepts, including metadata and DNA;
+Markdown parser. Scan the active concepts, including metadata and proposal-only pages;
 an incomplete scan refuses. Relocated recognized relative concept links
 become root-relative; incoming links to a retired source are redirected.
 Preserve URI links and move fragments. Refuse edits to a protected linker,
@@ -106,13 +119,14 @@ regeneration. Dangling links already unrelated to this operation are not
 validated. Packaged navigation remains a snapshot; use
 `okfy_overview(listing=true)` for the live inventory.
 
-**DNA:** `okfy_write` on exactly `dna` uses the existing base-checked
+**Proposal-only concepts:** `okfy_write` on a listed exact ID uses the existing base-checked
 proposal fallback (full OKF Markdown or, for update, body patch). Omit
-`operation_id`. Or call `okfy_propose(target_id="dna", action="update",
+`operation_id`. Or call `okfy_propose(target_id="handbook/charter", action="update",
 note=..., content=..., actor=..., evidence=...)` directly. Proposal target
 paths are checked at filing and consumption; `supersedes` replaces a
-*proposal*, never an active page. An agent can propose initial DNA while
-absent but cannot bootstrap active DNA by calling a tool.
+*proposal*, never an active page. An agent can propose an initial page while it is
+absent; filing does not create the active concept. CLI `okfy write` refuses
+instead of filing; use `okfy propose` for review.
 
 ## Results and reconciliation
 
@@ -126,11 +140,11 @@ absent but cannot bootstrap active DNA by calling a tool.
   not the session trace. The original commit contains all those rows, the log
   and the concept transitions; removed bytes are in its parent. History is by
   path; `okfy_diff` still requires a live path with a known committed base.
-* **Filed, not active or committed by this call:** pilot proposal success
+* **Filed, not active or committed by this call:** path-routed proposal success
   has `{effect:"filed", channel:"proposal", proposal, path, persisted:true}`
   plus the usual optional proposal diagnostics. Filing writes a proposal and
   appends its event to `meta/memory.jsonl`; it doesn't commit them, accept the
-  proposal, or change active DNA. A later direct commit of the ledger may
+  proposal, or change the active concept. A later direct commit of the ledger may
   include those pending proposal rows. Proposal IDs aren't operation receipts.
 * **No-op:** byte-identical direct update after serialization returns the
   direct write fields, `effect:"no-op", persisted:false, replayed:false`
@@ -161,18 +175,24 @@ commit, every operand's parent/result blob and the complete changed path set.
 
 **Limits:** one trusted, standalone, normally configured Git repo with an
 intact first-parent history. Touched concept bytes (including absence) must
-match HEAD; the index must be clean. Mutators share OKFy's advisory review
-lock. Reads do not: listing/show can observe intermediate filesystem states.
+match HEAD; the index must be clean. Direct writes, reorganize, proposal
+filing (including checked fallback and batch), and review accept/reject
+cooperate on one advisory lock per bundle. Owner `refine` and `dismiss`
+do **not** take that lock, and their commits can include the whole index.
+Do not overlap them or other operator maintenance with these writes. Readers
+also take no review lock: listing/show can observe intermediate file states.
 There is no crash-atomic filesystem transaction. On write failure the
 instrument attempts path-scoped rollback only at unchanged HEAD. A crash,
 failed rollback, manual/concurrent shell edits, Git filters/hooks, history
 rewrite, branch switch or an incomplete receipt can require operator
 inspection of the worktree, index, ledger and commits; don't blindly submit
 a new ID. An error on retry does not disprove an earlier partial effect.
-Keep operator maintenance offline. No exactly-once claim across clones,
+Without a verified receipt, an unsettled ledger, log or operand can be an
+interrupted operation, even if its bytes now look right. The retry returns
+uncertain, not a new base or author attribution. Stop writes and have the
+owner reconcile offline before retrying. No exactly-once claim across clones,
 other writers or stores, and no idempotency promise for proposals.
 
-Nothing here activates DNA as a system prompt: the recipe/operator owns that
-decision. No sync daemon, host-file editor, new access policy or automatic
-outbound disclosure. Bundle text is data, not authority. Audience and privacy
+Nothing here treats a concept as a system prompt. No sync daemon, host-file
+editor, new access policy or automatic outbound disclosure. Bundle text is data, not authority. Audience and privacy
 at later use are runtime responsibilities, not enforced by these paths.

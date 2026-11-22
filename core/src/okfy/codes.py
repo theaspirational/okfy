@@ -80,12 +80,12 @@ CODES: dict[str, dict] = {
     },
     "E_MEMORY_OPERATION": {
         "kind": "error",
-        "summary": "an evolutionary-memory-v1 mutation failed a precondition",
+        "summary": "a path-routed memory mutation failed a precondition",
         "way_out": "check the reported path, operation, receipt or expected bases",
     },
     "E_MEMORY_REPOSITORY": {
         "kind": "error",
-        "summary": "the pilot could not check its standalone Git repository",
+        "summary": "a memory operation could not check its standalone Git repository",
         "way_out": "inspect the repository before retrying",
     },
     "E_MEMORY_ROLLBACK": {
@@ -96,17 +96,17 @@ CODES: dict[str, dict] = {
     "E_MEMORY_UNCERTAIN": {
         "kind": "error",
         "summary": "memory persistence, rollback or the committed receipt could not be confirmed",
-        "way_out": "reconcile a direct operation with its identical request; otherwise inspect before retry",
+        "way_out": "stop writes and inspect the worktree, index, ledger and commit history before retry",
     },
     "E_DIRECT_POLICY": {
         "kind": "error",
-        "summary": "meta/purpose.md declares a `direct` block but write_policy is not `proposals`, so the block does nothing",
-        "way_out": "remove `direct`, or set write_policy: proposals",
+        "summary": "meta/purpose.md declares incompatible write policies or invalid path rules",
+        "way_out": "use disjoint path rules or a type list with write_policy: proposals, or remove direct",
     },
     "E_DIRECT_KEY": {
         "kind": "error",
         "summary": "meta/purpose.md `direct` is not a mapping, or has an unknown key",
-        "way_out": "choose direct.types or direct.profile and remove unknown keys",
+        "way_out": "choose direct.types or direct.prefixes (optionally with direct.proposal_only); remove unknown keys",
     },
     "E_DIRECT_TYPE": {
         "kind": "error",
@@ -1432,12 +1432,12 @@ CODES: dict[str, dict] = {
     },
     "E_DIRECT_DISABLED": {
         "kind": "error",
-        "summary": "a direct write (`okfy write`, core write_direct) was sent to a bundle whose meta/purpose.md lists no `direct.types`",
+        "summary": "a direct write (`okfy write`, core write_direct) was sent to a bundle whose meta/purpose.md does not declare a direct lane",
         "way_out": "file a proposal instead (okfy propose / okfy_propose); MCP okfy_write does this by itself",
     },
     "E_DIRECT_LANE": {
         "kind": "error",
-        "summary": "a direct write targets a concept whose type is not in `direct.types`, or an id under a reserved directory (meta/, proposals/, drafts/, index/, protocols/)",
+        "summary": "a direct write targets a concept whose type is not in `direct.types`, an exact proposal-only ID, or an id under a reserved directory (meta/, proposals/, drafts/, index/, protocols/)",
         "way_out": "file a proposal instead (okfy propose / okfy_propose); MCP okfy_write does this by itself",
     },
     "E_DIRECT_TARGET": {

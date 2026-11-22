@@ -2,6 +2,8 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import uuid
 
 import pytest
@@ -10,7 +12,7 @@ from okfy import evolution, frontmatter, memory, proposals
 from okfy.bundle import Bundle
 from okfy.gitenv import run_git
 from okfy.init import init_bundle
-from okfy.validate import MEMORY_PROFILE, direct_policy, preedit_policy
+from okfy.validate import direct_policy, preedit_policy
 from okfy_mcp.server import build_server
 
 ACTOR = "fixture/1"
@@ -37,7 +39,7 @@ def root(tmp_path, monkeypatch):
     root = init_bundle(tmp_path / "memory", corpus)
     purpose = root / "meta/purpose.md"
     meta, body = frontmatter.parse(purpose.read_text())
-    meta["direct"] = {"profile": MEMORY_PROFILE}
+    meta["direct"] = {"prefixes": ["core/", "notes/"], "proposal_only": ["dna"]}
     purpose.write_text(frontmatter.serialize(meta, body))
     seed(root, "dna", "Operator provisioned.")
     seed(root, "notes/a", "One.\n\nTwo [other](b.md).")
@@ -218,12 +220,20 @@ def test_dirty_and_uncommitted_state_is_not_a_receipt(root):
     args.update(extract="One.", bases={a: sha(root, a), dest: "absent"})
     memory.record(Bundle(root), "accept", actor=ACTOR, target=a, proposal=None,
                   action="update", content_sha256=sha(root, a), receipt={"id": args["operation_id"]})
-    assert "unsettled ledger" in tool(s, "okfy_reorganize", **args)["message"]
+    result = tool(s, "okfy_reorganize", **args)
+    assert result["effect"] == "uncertain" and "unsettled ledger" in result["message"]
+    assert not (root / "core").exists()
+
+    # A maintenance commit might carry the interrupted row without its
+    # operand transitions or trailer. It isn't proof, nor a free ID.
+    git(root, "add", memory.MEMORY_FILE)
+    git(root, "commit", "-qm", "unrelated maintenance")
+    assert tool(s, "okfy_reorganize", **args)["effect"] == "uncertain"
     assert not (root / "core").exists()
 
 
-def test_malformed_profile_does_not_enable_governing_types():
-    purpose = {"direct": {"profile": MEMORY_PROFILE}, "write_policy": "proposals",
+def test_path_routing_does_not_enable_governing_types():
+    purpose = {"direct": {"prefixes": ["field/"]}, "write_policy": "proposals",
                "preedit": {"governing_types": ["Memory"]}}
     assert direct_policy(purpose)[1] and preedit_policy(purpose)[1]
     assert direct_policy({"write_policy": "proposals", "direct": {"profile": "typo"}})[1]
@@ -366,11 +376,14 @@ def test_legacy_absent_lane_and_arbitrary_types(root):
     assert "okfy_reorganize" not in [t.name for t in asyncio.run(s.list_tools())]
     args = dict(concept_id="dna", expect_sha256=sha(root, "dna"), actor=ACTOR, content=seed_text())
     assert tool(s, "okfy_write", **args)["channel"] == "proposal"
-    meta["direct"] = {"types": ["Memory"]}
+    meta["direct"] = {"types": ["Memory", "Field Record"]}
     purpose.write_text(frontmatter.serialize(meta, body))
     s = build_server(root)
     out = tool(s, "okfy_write", **args)
     assert out["channel"] == "direct" and "operation_id" not in out  # no universal DNA policy
+    other = tool(s, "okfy_write", concept_id="far/record", expect_sha256="absent",
+                 actor=ACTOR, content=seed_text().replace("type: Memory", "type: Field Record"))
+    assert other["channel"] == "direct" and "effect" not in other
 
 
 def test_proposal_cannot_consume_dna_even_if_it_looks_like_its_lane(root):
@@ -450,6 +463,186 @@ def test_packaged_memory_instructions_do_not_impose_an_archetype_layout(root):
     from okfy.package import _write_memory_protocol, render_agents_md
     b = Bundle(root)
     guidance = render_agents_md(b, _archetype_for(b))
-    assert "dna is proposal-only" in guidance and "strategies/" not in guidance
+    assert "direct.proposal_only" in guidance and "strategies/" not in guidance
     _write_memory_protocol(b, "proposals")
     assert "Choose the hierarchy" in (root / "protocols/memory.md").read_text()
+
+
+def set_direct(root, rules):
+    path = root / "meta/purpose.md"
+    meta, body = frontmatter.parse(path.read_text())
+    meta["direct"] = rules
+    path.write_text(frontmatter.serialize(meta, body))
+
+
+def test_named_paths_are_bundle_local_and_checked_at_each_door(root):
+    src, dst = "lab/field/start", "lab/field/dna"
+    charter = "handbook/charter"
+    set_direct(root, {"prefixes": ["lab/field/"], "proposal_only": [charter, "bylaws"]})
+    seed(root, charter, "See [start](/lab/field/start.md).")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "select local path rules")
+    s = build_server(root)
+    assert "okfy_reorganize" in [t.name for t in asyncio.run(s.list_tools())]
+
+    def write(cid, base, content):
+        return tool(s, "okfy_write", concept_id=cid, expect_sha256=base, content=content, actor=ACTOR)
+
+    for cid in ("dna", "core/x", "notes/a", "lab/fieldwork/x", "lab/field",
+                "handbook/charters", "bylaws/child"):
+        exists = (root / f"{cid}.md").exists()
+        assert write(cid, sha(root, cid) if exists else "absent", seed_text())["effect"] == "refused"
+        assert tool(s, "okfy_propose", target_id=cid, action="update" if exists else "create", note="Edit",
+                    actor=ACTOR, content=seed_text())["effect"] == "refused"
+
+    base = write(src, "absent", "Basis.")["sha256"]
+    move = request("move", src, dst, {src: base, dst: "absent"})
+    before = git(root, "rev-parse", "HEAD")
+    for bases in (move["bases"], {**move["bases"], charter: sha(root, charter)}):
+        out = tool(s, "okfy_reorganize", **{**move, "bases": bases})
+        assert out["effect"] == "refused" and charter in out["message"]
+    assert git(root, "rev-parse", "HEAD") == before and not git(root, "status", "--porcelain")
+
+    for target, action, successor in ((charter, "delete", None), (charter, "supersede", dst),
+                                      (src, "supersede", "bylaws")):
+        out = tool(s, "okfy_propose", target_id=target, actor=ACTOR, action=action,
+                   note="Forbidden", content=seed_text(), new_id=successor)
+        assert out["effect"] == "refused" and "proposal-only" in out["message"]
+    out = write("bylaws", "absent", seed_text())
+    assert out["effect"] == "filed" and not Bundle(root).get("bylaws")
+    old = sha(root, charter)
+    prop = write(charter, old, seed_text())
+    assert prop["effect"] == "filed" and sha(root, charter) == old
+    assert git(root, "rev-parse", "HEAD") == before
+    assert proposals.accept(Bundle(root), prop["proposal"]) == charter
+    assert Bundle(root).get(charter).body == "Candidate."
+    assert tool(s, "okfy_reorganize", **move)["effect"] == "committed"
+    assert sha(root, dst) == base
+
+
+@pytest.mark.parametrize("rules", [
+    {"profile": "evolutionary-memory-v1"}, {"proposal_only": ["charter"]},
+    {"prefixes": []}, {"prefixes": "lab/"}, {"prefixes": [12]},
+    {"prefixes": ["lab"]}, {"prefixes": ["../lab/"]}, {"prefixes": ["meta/x/"]},
+    {"prefixes": ["Lab/"]}, {"prefixes": ["lab//"]}, {"prefixes": ["units/*/"]},
+    {"prefixes": ["lab/"], "types": ["Memory"]}, {"prefixes": ["lab/"], "typo": []},
+    {"prefixes": ["lab/", "lab/"]}, {"prefixes": ["lab/deep/", "lab/"]},
+    {"prefixes": ["lab/"], "proposal_only": ["lab/charter"]},
+    {"prefixes": ["lab/"], "proposal_only": ["charter", "charter"]},
+    {"prefixes": ["lab/"], "proposal_only": "charter"},
+    {"prefixes": ["lab/"], "proposal_only": [None]},
+    {"prefixes": ["lab/"], "proposal_only": ["guides/"]},
+    {"prefixes": ["lab/"], "proposal_only": ["other/log"]},
+    {"prefixes": ["lab/"], "proposal_only": ["charter.md"]},
+    {"prefixes": ["lab/"], "proposal_only": ["readme"]},
+])
+def test_ambiguous_or_invalid_path_rules(rules):
+    assert direct_policy({"write_policy": "proposals", "direct": rules})[1]
+
+
+def test_invalid_policy_cannot_fall_back_to_less_restricted_proposals(root):
+    s = build_server(root)
+    b = Bundle(root)
+    args = dict(actor=ACTOR, action="update", content=seed_text(), target_id="dna", note="Edit")
+    prop = tool(s, "okfy_propose", **args)["proposal"]
+    old = sha(root, "dna")
+    set_direct(root, {"prefixes": ["lab/"], "proposal_only": ["lab/entry"], "types": ["Memory"]})
+    restart = build_server(root)
+    assert "okfy_reorganize" not in [t.name for t in asyncio.run(restart.list_tools())]
+    for server in (s, restart):
+        assert tool(server, "okfy_propose", **{**args, "action": "delete"})["error"] == "E_DIRECT_POLICY"
+        assert tool(server, "okfy_write", concept_id="dna", expect_sha256=old,
+                    actor=ACTOR, content=seed_text())["error"] == "E_DIRECT_POLICY"
+    assert tool(s, "okfy_reorganize", **request("move", "notes/a", "lab/a",
+                {"notes/a": sha(root, "notes/a"), "lab/a": "absent"}))["error"] == "E_DIRECT_POLICY"
+    with pytest.raises(ValueError, match="E_DIRECT_POLICY"):
+        proposals.accept(b, prop)
+    assert sha(root, "dna") == old and b.get(prop)
+
+
+@pytest.mark.parametrize("tool_name,cut", [("okfy_write", "commit"), ("okfy_write", "record"),
+                                         ("okfy_reorganize", "commit")])
+def test_crash_before_commit_is_uncertain_on_exact_retry(root, tool_name, cut):
+    # Exit a separate process without unwinding either the write or its lock.
+    # "record" dies after the first file change but BEFORE a ledger row exists.
+    cid, dst = "notes/a", "core/moved"
+    args = (dict(actor=ACTOR, concept_id=cid, expect_sha256=sha(root, cid), content="Interrupted.",
+                 operation_id=ident()) if tool_name == "okfy_write" else
+            request("move", cid, dst, {cid: sha(root, cid), dst: "absent", "notes/b": sha(root, "notes/b")}))
+    checkpoint = "proposals._commit" if cut == "commit" else "memory.record"
+    child = f"""
+import asyncio, os
+from okfy import memory, proposals
+from okfy_mcp.server import build_server
+from pathlib import Path
+{checkpoint} = lambda *a, **kw: os._exit(9)
+asyncio.run(build_server(Path({str(root)!r})).call_tool({tool_name!r}, {args!r}))
+"""
+    head = git(root, "rev-parse", "HEAD")
+    assert subprocess.run([sys.executable, "-c", child]).returncode == 9
+    assert git(root, "rev-parse", "HEAD") == head
+
+    def state():
+        # Includes untracked new operands and ledger, not just git diff.
+        paths = [root / p for p in ("notes/a.md", "notes/b.md", "core/moved.md", "log.md", memory.MEMORY_FILE)]
+        return ([p.read_bytes() if p.exists() else None for p in paths],
+                git(root, "diff", "--cached"), git(root, "rev-parse", "HEAD"))
+
+    crashed = state()
+    assert crashed[0][0] != git(root, "show", "HEAD:notes/a.md")
+    if cut == "commit":
+        assert args["operation_id"].encode() in crashed[0][-1]
+    else:
+        assert crashed[0][-1] is None
+    out = tool(build_server(root), tool_name, **args)
+    assert (out["error"], out["effect"], out["operation_id"]) == (
+        "E_MEMORY_UNCERTAIN", "uncertain", args["operation_id"])
+    assert not {"commit", "changed_by", "current_sha256", "persisted"} & out.keys()
+    assert "inspect" in out["way_out"] and "do not rebase" in out["way_out"]
+    assert state() == crashed
+
+
+def test_cli_batch_and_review_use_current_policy(root, tmp_path):
+    # File a valid delete, then protect that exact ID before consumption.
+    cid = "notes/a"
+    prop = tool(build_server(root), "okfy_propose", target_id=cid, action="delete",
+                actor=ACTOR, note="Remove obsolete page.")["proposal"]
+    set_direct(root, {"prefixes": ["research/"], "proposal_only": [cid]})
+    git(root, "commit", "-qm", "restrict existing page", "--", "meta/purpose.md")
+    base = sha(root, cid)
+    text = tmp_path / "change.md"
+    text.write_text(seed_text())
+    batch = tmp_path / "proposals.jsonl"
+    batch.write_text(json.dumps({"target": cid, "action": "delete", "note": "Remove."}) + "\n")
+    def cli(*args):
+        return subprocess.run([sys.executable, "-m", "okfy.cli", *args], capture_output=True, text=True)
+    head = git(root, "rev-parse", "HEAD")
+    refused = cli("write", root, cid, "--as", ACTOR, "--expect", base, "--from", text)
+    assert refused.returncode == 2 and "E_DIRECT_LANE" in refused.stderr
+    refused = cli("propose", root, "--batch", batch, "--as", ACTOR)
+    assert refused.returncode == 1 and json.loads(refused.stdout)["filed"] == []
+    refused = cli("review", "accept", root, prop)
+    assert refused.returncode == 2 and "proposal-only" in refused.stderr
+    assert git(root, "rev-parse", "HEAD") == head and sha(root, cid) == base
+    assert Bundle(root).get(prop)
+
+
+def test_direct_commit_excludes_unrelated_bytes_but_keeps_proposal_rows(root):
+    s = build_server(root)
+    prop = tool(s, "okfy_propose", target_id="dna", action="update", actor=ACTOR,
+                note="For review", content=seed_text())["proposal"]
+    old_ledger = (root / memory.MEMORY_FILE).read_bytes()
+    seed(root, "notes/b", "Uncommitted owner change.")
+    cid = "notes/a"
+    args = dict(concept_id=cid, actor=ACTOR, operation_id=ident(),
+                expect_sha256=sha(root, cid), content="Revised.")
+    result = tool(s, "okfy_write", **args)
+    commit = result["commit"]
+    paths = set(git(root, "diff", "--name-only", f"{commit}^", commit).decode().splitlines())
+    assert paths == {f"{cid}.md", "log.md", memory.MEMORY_FILE}
+    committed = git(root, "show", f"{commit}:{memory.MEMORY_FILE}")
+    assert committed.startswith(old_ledger) and old_ledger
+    row = json.loads(committed[len(old_ledger):])
+    assert row["receipt"]["id"] == args["operation_id"] and row["receipt"]["sha256"] == sha(root, cid)
+    assert Bundle(root).get(prop) and git(root, "status", "--porcelain", f"{prop}.md").startswith(b"??")
+    assert git(root, "diff", "--", "notes/b.md")

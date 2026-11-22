@@ -19,7 +19,7 @@ from okfy import frontmatter, memory
 from okfy.actor import (MAX_ACTOR_CHARS, check_actor, check_owner_actor, owner_actor,
                         utc_now)
 from okfy.bm25 import tokenize
-from okfy.bundle import DRAFT_DIR, PROPOSAL_DIR, RESERVED_DIRS, SKIP_DIRS, Bundle, Concept
+from okfy.bundle import PROPOSAL_DIR, RESERVED_ID_ROOTS, Bundle, Concept
 from okfy.cluster import _alias_keys, _jaccard, _title_key
 from okfy.gitenv import run_git
 from okfy.ids import IDENTITY_KEYS, carries_okf_id, new_id as mint_id
@@ -27,9 +27,9 @@ from okfy.package import append_log
 from okfy.pathscope import path_scope_problems
 from okfy.sourcemap import cited_span
 from okfy.transcript_lint import _SEGMENT
-from okfy.validate import (LINK_RE, Report, _check_archetype, _declared_types,
+from okfy.validate import (LINK_RE, PathPolicy, Report, _check_archetype, _declared_types,
                            _index_mode, _norm, _shard_files, _source_checker,
-                           archetype_applies, direct_policy, ledger_prefix_check, memory_profile,
+                           archetype_applies, checked_direct_policy, ledger_prefix_check,
                            resolve_link, review_due_date)
 
 ACTIONS = {"create", "update", "delete", "supersede", "flag", "gap"}
@@ -190,15 +190,6 @@ def query_hash(q: str) -> str:
     return hashlib.sha256(normalize_query(q).encode("utf-8")).hexdigest()
 
 
-def _pilot_declared(bundle):
-    """Extra pilot path guards, NOT authorization. Generic review still works
-    for an owner repairing an unreadable policy; direct writes always parse it."""
-    try:
-        return memory_profile(bundle.purpose())
-    except (ValueError, OSError):
-        return False
-
-
 @contextlib.contextmanager
 def review_lock(bundle: Bundle):
     """One accept or reject at a time per bundle. The base check and the write
@@ -209,7 +200,7 @@ def review_lock(bundle: Bundle):
     an untracked lock under proposals/ would dirty every bundle's worktree."""
     from okfy.index import index_path
     lock = index_path(bundle).parent / "review.lock"
-    if _pilot_declared(bundle):
+    if isinstance(checked_direct_policy(bundle), PathPolicy):
         from okfy.evolution import regular_path
         regular_path(bundle, lock)
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -403,14 +394,6 @@ def _kebab(s: str) -> str:
 # that fails this regex can never spell `..`, an empty path piece, or
 # anything but ASCII lower-kebab, so those are refused for free.
 _ID_SEGMENT_RE = re.compile(rf"^{_SEGMENT}$")
-# The bundle's own reserved/generated top levels (bundle.RESERVED_DIRS,
-# `okfy package`-owned) and dot-dirs (bundle.SKIP_DIRS), plus the three
-# OKF-owned top levels concept discovery itself special-cases: `meta/` (bundle
-# config, never a concept), `proposals/` (open proposals — a concept "in"
-# proposals/ would read back as an open proposal, not an accepted one) and
-# `drafts/` (pre-review extraction output, skipped by iter_md_files unless
-# asked for).
-RESERVED_ID_ROOTS = {"meta", PROPOSAL_DIR, DRAFT_DIR} | RESERVED_DIRS | SKIP_DIRS
 
 
 def _validate_write_id(bundle: Bundle, cid: str | None, *, flag: str) -> str:
@@ -691,9 +674,10 @@ def _prepare_proposal(bundle: Bundle, meta: dict, body: str, target: str | None 
     silently clobber the first at materialize time. `sibling_gap_open_count`
     is how many earlier OK gap entries in this same batch, by this same
     actor, `_gate`'s on-disk GAP_CAP count cannot see yet."""
-    if _pilot_declared(bundle):
-        from okfy.evolution import proposal_targets
-        proposal_targets(bundle, "update" if extends else action, extends or target, new_id)
+    policy = checked_direct_policy(bundle)
+    if isinstance(policy, PathPolicy):
+        from okfy.evolution import proposal_targets, regular_path
+        proposal_targets(bundle, policy, "update" if extends else action, extends or target, new_id)
     if extends is not None:
         extends = _validate_write_id(bundle, extends, flag="extends")
         if bundle.get(extends) is None:
@@ -761,6 +745,8 @@ def _prepare_proposal(bundle: Bundle, meta: dict, body: str, target: str | None 
     old_env: dict = {}
     if supersedes is not None:
         old_proposal = _load_proposal(bundle, supersedes)
+        if isinstance(policy, PathPolicy):
+            regular_path(bundle, old_proposal.path)
         old_env = old_proposal.meta.get("proposal") or {}
         old_actor = (old_proposal.meta.get("generated") or {}).get("by")
         old_target = old_env.get("target")
@@ -882,7 +868,7 @@ def _materialize_proposal(bundle: Bundle, prepared: dict) -> Path:
     never actually be missing, but a write half that trusts that from a
     second, unrelated code path is the one that stayed broken."""
     path = prepared["path"]
-    if _pilot_declared(bundle):
+    if isinstance(checked_direct_policy(bundle), PathPolicy):
         from okfy.evolution import regular_path
         regular_path(bundle, path)
         regular_path(bundle, bundle.root / memory.MEMORY_FILE)
@@ -1869,9 +1855,11 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
     # look like one.
     target = env.get("target") or (
         c.id.removeprefix(f"{PROPOSAL_DIR}/") if action not in ("flag", "gap") else None)
-    if _pilot_declared(bundle):
+    policy = checked_direct_policy(bundle)
+    if isinstance(policy, PathPolicy):
         from okfy.evolution import proposal_targets, regular_path
-        proposal_targets(bundle, action, env.get("target"), env.get("new_id"))
+        regular_path(bundle, c.path)
+        proposal_targets(bundle, policy, action, env.get("target"), env.get("new_id"))
         for rel in ("log.md", memory.MEMORY_FILE, *(["meta/lexicon.md"] if action == "gap" else [])):
             regular_path(bundle, bundle.root / rel)
     existing = bundle.get(target)
@@ -2149,6 +2137,10 @@ def _reject(bundle: Bundle, proposal_id: str, reason: str = "", *,
     # `_refuse_if_ledger_rewritten`'s docstring. `_commit` below still
     # re-checks as the backstop.
     _refuse_if_ledger_rewritten(bundle, memory.MEMORY_FILE)
+    if isinstance(checked_direct_policy(bundle), PathPolicy):
+        from okfy.evolution import regular_path
+        for path in (c.path, bundle.root / "log.md", bundle.root / memory.MEMORY_FILE):
+            regular_path(bundle, path)
     c.path.unlink()
     reject_action = env.get("action", "create")
     # A gap's tombstone is keyed on the NORMALIZED QUERY (see propose()'s
@@ -2298,6 +2290,12 @@ def propose_checked(bundle: Bundle, meta: dict, body: str, target: str,
     for a create). Check and filing share one `review_lock`, so the
     `base_sha256` the proposal records is the base the author actually saw."""
     with review_lock(bundle):
+        policy = checked_direct_policy(bundle)
+        if isinstance(policy, PathPolicy):
+            from okfy.evolution import proposal_targets
+            if kw.get("extends") is not None:
+                target, action = kw["extends"], "update"
+            proposal_targets(bundle, policy, action, target, kw.get("new_id"))
         _path, raw, current = _base_capture(bundle, target)
         _refuse_base_moved(target, expect_sha256, current)
         # The author was told to send owner fields back as they read them. A
@@ -2348,7 +2346,8 @@ def write_direct(bundle: Bundle, concept_id: str, *, actor: str, expect_sha256: 
                  note: str = "", observed: dict | None = None,
                  archetype=None, evidence=None, operation_id=None) -> dict:
     """An AGENT's write that lands without review — only for a concept whose
-    type `meta/purpose.md` lists under `direct.types`. Everything else is
+    type `meta/purpose.md` lists under `direct.types`, or whose path is in
+    a configured direct prefix. In type routing, anything outside the lane is
     refused with `E_DIRECT_LANE` (or `E_DIRECT_DISABLED` when the bundle
     declares no lane) and belongs in `propose`.
 
@@ -2409,27 +2408,24 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
                   text: str | None, hunks: list[dict] | None, note: str,
                   observed: dict | None, archetype, create: bool, evidence, operation_id) -> dict:
     propose_instead = "file a proposal instead (okfy propose / okfy_propose)"
-    purpose = bundle.purpose()
-    types, problems = direct_policy(purpose)
-    if problems:
-        raise ValueError(f"{problems[0][0]}: meta/purpose.md: {problems[0][1]}")
-    pilot = memory_profile(purpose)
-    if operation_id is not None and (not pilot or concept_id == "dna"):
+    policy = checked_direct_policy(bundle)
+    by_path = isinstance(policy, PathPolicy)
+    if operation_id is not None and (not by_path or concept_id in policy.proposal_only):
         raise ValueError("operation_id is only supported for direct memory operations")
-    if pilot:
+    if by_path:
         from okfy import evolution
-        if concept_id == "dna":
-            evolution.regular_path(bundle, bundle.root / "dna.md")
-            raise ValueError(f"{E_DIRECT_LANE}: dna is proposal-only — {propose_instead}")
-        evolution.ordinary_path(bundle, concept_id)
-        operation = evolution.Operation(bundle, operation_id, {
+        if concept_id in policy.proposal_only:
+            evolution.regular_path(bundle, bundle.root / f"{concept_id}.md")
+            raise ValueError(f"{E_DIRECT_LANE}: {concept_id} is proposal-only — {propose_instead}")
+        evolution.ordinary_path(bundle, policy, concept_id)
+        operation = evolution.Operation(bundle, policy, operation_id, {
             "write": concept_id, "base": expect_sha256, "actor": actor,
             "text": text, "patch": hunks, "note": note, "evidence": evidence})
-        if operation.prior:
+        if operation.result:
             return operation.write_result(concept_id)
-    elif types is None:
+    elif policy is None:
         raise ValueError(
-            f"{E_DIRECT_DISABLED}: this bundle lists no `direct.types` in "
+            f"{E_DIRECT_DISABLED}: this bundle defines no direct lane in "
             f"meta/purpose.md, so nothing lands without review — {propose_instead}")
     if str(concept_id).split("/")[0] in RESERVED_ID_ROOTS:
         raise ValueError(
@@ -2451,15 +2447,15 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
                 "(it resolves to another path) — use the id the concept was "
                 "read under")
         before, before_body = frontmatter.parse(_text(raw))
-        if not pilot and before.get("type") not in types:
+        if not by_path and before.get("type") not in policy:
             raise ValueError(
                 f"{E_DIRECT_LANE}: {concept_id} has type {before.get('type')!r}, "
-                f"which is not in direct.types {types} — {propose_instead}")
+                f"which is not in direct.types {policy} — {propose_instead}")
     _refuse_base_moved(concept_id, expect_sha256, current)
 
     if hunks is not None:
         meta, body = dict(before), _apply_patch(before_body, hunks)
-    elif pilot and not text.startswith("---"):
+    elif by_path and not text.startswith("---"):
         meta, body = dict(before), text
         if create:
             meta = evolution.minimal_metadata(concept_id, body)
@@ -2481,10 +2477,10 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
         # beats the alternative — the lane check below would send it to a
         # proposal, invisible to search, that validate rejects once accepted.
         check_new_type(bundle, meta)
-        if not pilot and meta.get("type") not in types:
+        if not by_path and meta.get("type") not in policy:
             raise ValueError(
                 f"{E_DIRECT_LANE}: the new concept has type {meta.get('type')!r}, "
-                f"which is not in direct.types {types} — {propose_instead}")
+                f"which is not in direct.types {policy} — {propose_instead}")
     if not create and meta.get("type") != before.get("type"):
         raise ValueError(
             f"{E_DIRECT_RETYPE}: this write changes {concept_id}'s type from "
@@ -2517,12 +2513,12 @@ def _write_direct(bundle: Bundle, concept_id: str, actor: str, expect_sha256: st
     if create and carries_okf_id(concept_id):
         meta["okf_id"] = mint_id()
 
-    if pilot:
+    if by_path:
         if evidence is not None:
             meta["evidence"] = check_evidence(evidence)
         evolution.validate_fields(meta)
     validate_direct_document(bundle, concept_id, path, meta, body, note, hunks, archetype)
-    if pilot:
+    if by_path:
         data = frontmatter.serialize(meta, body).encode("utf-8")
         operation.apply("write", actor, {concept_id: (raw, data)}, note, observed)
         return operation.write_result(concept_id)

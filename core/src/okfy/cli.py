@@ -378,9 +378,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "write",
-        help="an AGENT's direct write, no review: only for a concept whose "
-             "type meta/purpose.md lists under direct.types (E_DIRECT_LANE / "
-             "E_DIRECT_DISABLED otherwise — use okfy propose), and only if "
+        help="an AGENT's direct write, no review: only for types or paths opened by "
+             "meta/purpose.md (direct.types or direct.prefixes), and only if "
              "the file is still the bytes the author read (E_WRITE_BASE_MOVED)")
     p.add_argument("bundle", type=Path)
     p.add_argument("concept_id")
@@ -394,7 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "exist yet")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--from", dest="from_file", type=Path, default=None,
-                   help="full concept .md (frontmatter + body)")
+                   help="full concept .md, or plain body for a direct path write")
     g.add_argument("--patch-file", dest="patch_file", type=Path, default=None,
                    help="JSON list of {old, new, count=1} hunks applied to "
                         "the concept's current body")

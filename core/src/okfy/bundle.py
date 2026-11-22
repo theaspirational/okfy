@@ -18,6 +18,7 @@ ROOT_DOC_FILES = {"README.md", "AGENTS.md", "CLAUDE.md"}  # generated docs, not 
 # owner or agent, so they are reserved the same way index.md/log.md are:
 # excluded from concept discovery unconditionally, at the bundle root only.
 RESERVED_DIRS = {"index", "protocols"}
+RESERVED_ID_ROOTS = {"meta", PROPOSAL_DIR, DRAFT_DIR} | RESERVED_DIRS | SKIP_DIRS
 # What `okfy init` writes: a bundle is known by these, not by its folder name,
 # because `--embed` may put one at any path inside the corpus.
 BUNDLE_MARKERS = {"meta/purpose.md": "Purpose", "meta/corpus.md": "CorpusSnapshot"}

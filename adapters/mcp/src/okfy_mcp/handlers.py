@@ -14,7 +14,6 @@ from okfy.codes import CODES
 from okfy.commands.common import _archetype_for
 from okfy.index import load_index
 from okfy.package import GENERATED_MARKER
-from okfy.validate import PathPolicy, checked_direct_policy
 from okfy_mcp import render
 from okfy_mcp.resolve import Target
 from okfy_mcp.session import Session
@@ -906,8 +905,6 @@ def h_propose(t: Target, target: str, action: str, note: str,
     try:
         return _proposal_reply(t, path, meta, distinct_from)
     except Exception:
-        if not isinstance(checked_direct_policy(t.bundle), PathPolicy):
-            raise
         # The call to core succeeded; do not turn a subsequent presentation
         # failure (e.g. owner consumed the file) into a "nothing written" error.
         return {"proposal": t.bundle.concept_id(path), "persisted": True,

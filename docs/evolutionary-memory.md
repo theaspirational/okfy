@@ -32,8 +32,23 @@ the writers re-read the policy under the review lock.
 
 Without a path policy nothing opts in: a bundle with no direct lane keeps
 the normal proposal fallback, and `direct: {types: [...]}` keeps the existing
-type-based write behavior. Neither exposes `okfy_reorganize`. An invalid
-policy is not a fallback: repair the configuration offline before writing.
+type-based write behavior. Neither exposes `okfy_reorganize`.
+
+**If the policy is broken:** An invalid direct lane never authorizes a direct
+write, and `okfy_write` does not fall back to filing on a policy error.
+If `meta/purpose.md` parses and the only key in `direct` is `types`, a bad
+type list (or incompatible `write_policy`) does not restrict *proposals*.
+Use `okfy_propose` or `okfy propose` explicitly; the owner can still
+`review accept` or `review reject` under the normal review checks.
+
+Invalid path rules, mixed rules, unknown keys (even alongside `types`), and
+other unrecognized block shapes stop filing and review as well. An unknown
+key could be a misspelled protection. A missing, unreadable or unparsable
+purpose also stops these operations: it is not evidence of a legacy bundle.
+Leave queued proposals in place. With writers stopped, the owner should
+restore the intended `meta/purpose.md` and its readability offline, check
+the policy with `okfy validate <bundle>`, commit the repair and restart the
+server before resuming. Do not drop path rules just to drain the queue.
 
 IDs are extensionless lower-kebab path segments. Choose the hierarchy;
 there are no required thematic folders. Reserved names (including

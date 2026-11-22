@@ -100,8 +100,8 @@ CODES: dict[str, dict] = {
     },
     "E_DIRECT_POLICY": {
         "kind": "error",
-        "summary": "meta/purpose.md declares incompatible write policies or invalid path rules",
-        "way_out": "use disjoint path rules or a type list with write_policy: proposals, or remove direct",
+        "summary": "meta/purpose.md is unavailable or declares incompatible write policies or invalid path rules",
+        "way_out": "restore a readable meta/purpose.md with the intended policy; use disjoint path rules or a type list under write_policy: proposals",
     },
     "E_DIRECT_KEY": {
         "kind": "error",

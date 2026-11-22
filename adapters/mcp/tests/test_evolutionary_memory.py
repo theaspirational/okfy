@@ -54,6 +54,10 @@ def tool(server, name, **args):
     return json.loads(result[0].text)
 
 
+def cli(*args):
+    return subprocess.run([sys.executable, "-m", "okfy.cli", *args], capture_output=True, text=True)
+
+
 def sha(root, cid):
     return evolution.digest((root / f"{cid}.md").read_bytes())
 
@@ -614,8 +618,6 @@ def test_cli_batch_and_review_use_current_policy(root, tmp_path):
     text.write_text(seed_text())
     batch = tmp_path / "proposals.jsonl"
     batch.write_text(json.dumps({"target": cid, "action": "delete", "note": "Remove."}) + "\n")
-    def cli(*args):
-        return subprocess.run([sys.executable, "-m", "okfy.cli", *args], capture_output=True, text=True)
     head = git(root, "rev-parse", "HEAD")
     refused = cli("write", root, cid, "--as", ACTOR, "--expect", base, "--from", text)
     assert refused.returncode == 2 and "E_DIRECT_LANE" in refused.stderr
@@ -646,3 +648,128 @@ def test_direct_commit_excludes_unrelated_bytes_but_keeps_proposal_rows(root):
     assert row["receipt"]["id"] == args["operation_id"] and row["receipt"]["sha256"] == sha(root, cid)
     assert Bundle(root).get(prop) and git(root, "status", "--porcelain", f"{prop}.md").startswith(b"??")
     assert git(root, "diff", "--", "notes/b.md")
+
+
+# The same public calls must distinguish an invalid type lane from a policy
+# that may protect paths. File the review control *before* breaking the policy.
+@pytest.fixture(params=[
+    ("empty-types", {"types": []}, "proposals", "E_DIRECT_TYPE", True),
+    ("wrong-write-policy", {"types": ["Memory"]}, "open", "E_DIRECT_POLICY", True),
+    ("mixed-path", {"types": ["Memory"], "proposal_only": ["dna"]}, "proposals", "E_DIRECT_POLICY", False),
+    ("unknown-key", {"types": ["Memory"], "typo": 1}, "proposals", "E_DIRECT_KEY", False),
+    ("non-mapping", ["notes/"], "proposals", "E_DIRECT_KEY", False),
+    ("bad-yaml", None, None, "invalid YAML", False),
+    ("unreadable", None, None, "meta/purpose.md", False),
+    ("missing-purpose", None, None, "meta/purpose.md", False),
+], ids=lambda case: case[0])
+def broken_policy(root, request):
+    case, rules, write_policy, diagnostic, reviewable = request.param
+    purpose = root / "meta/purpose.md"
+
+    if reviewable:
+        set_direct(root, {"types": ["Memory"]})  # previously a working legacy-only bundle
+
+    def install():
+        if case == "bad-yaml":
+            purpose.write_text("---\ndirect: [\n---\n")
+        elif case == "unreadable":
+            purpose.chmod(0)
+            if os.access(purpose, os.R_OK):
+                pytest.skip("file permissions do not deny this user's reads")
+        elif case == "missing-purpose":
+            purpose.unlink()
+        else:
+            meta, body = frontmatter.parse(purpose.read_text())
+            meta.update(direct=rules, write_policy=write_policy)
+            purpose.write_text(frontmatter.serialize(meta, body))
+    return install, diagnostic, reviewable
+
+
+def queue_state(root):
+    # Proposals are often untracked, so git diff alone misses lost filings.
+    paths = [root / "log.md", root / memory.MEMORY_FILE, *sorted((root / "proposals").glob("*.md"))]
+    return [(p.name, p.read_bytes() if p.exists() else None) for p in paths]
+
+
+def test_broken_policy_filing(root, tmp_path, broken_policy):
+    install, diagnostic, reviewable = broken_policy
+    s = build_server(root)
+    install()
+    head, base, queue = git(root, "rev-parse", "HEAD"), sha(root, "dna"), queue_state(root)
+    write = tool(s, "okfy_write", concept_id="dna", expect_sha256=base, actor=ACTOR, content=seed_text())
+    queue_after_write = queue_state(root)
+    out = tool(s, "okfy_propose", target_id="dna", action="update", actor=ACTOR,
+               content=seed_text(), note="Explicit review.")
+    doc = tmp_path / "proposed.md"
+    doc.write_text(seed_text())
+    result = cli("propose", root, "--target", "notes/a", "--from", doc, "--as", ACTOR)
+    assert "error" in write and diagnostic in write["message"] and "persisted" not in write
+    assert queue_after_write == queue  # no implicit okfy_write fallback on a broken lane
+    if reviewable:
+        assert out.get("persisted"), out
+        assert result.returncode == 0, result.stderr
+        filed = [out["proposal"], json.loads(result.stdout)["proposal"]]
+        assert all(Bundle(root).get(prop).body == "Candidate." for prop in filed)
+        rows = (root / memory.MEMORY_FILE).read_text().splitlines()
+        assert [json.loads(row)["proposal"] for row in rows] == filed
+    else:
+        assert "error" in out and diagnostic in out["message"] and "persisted" not in out
+        assert result.returncode == 2 and diagnostic in result.stderr
+        assert queue_state(root) == queue
+    assert git(root, "rev-parse", "HEAD") == head and sha(root, "dna") == base
+
+
+@pytest.mark.parametrize("verb", ["accept", "reject"])
+def test_broken_policy_review(root, tmp_path, broken_policy, verb):
+    install, diagnostic, reviewable = broken_policy
+    doc = tmp_path / "proposed.md"
+    doc.write_text(seed_text())
+    result = cli("propose", root, "--target", "dna", "--from", doc, "--as", ACTOR)
+    assert result.returncode == 0, result.stderr
+    prop = json.loads(result.stdout)["proposal"]
+    install()
+    head, base, queue = git(root, "rev-parse", "HEAD"), sha(root, "dna"), queue_state(root)
+    result = cli("review", verb, root, prop)
+    if reviewable:
+        assert result.returncode == 0, result.stderr
+        assert not Bundle(root).get(prop) and git(root, "rev-parse", "HEAD") != head
+        row = json.loads((root / memory.MEMORY_FILE).read_text().splitlines()[-1])
+        assert (row["event"], row["proposal"]) == (verb, prop)
+        if verb == "accept":
+            assert Bundle(root).get("dna").body == "Candidate."
+        else:
+            assert sha(root, "dna") == base
+    else:
+        assert result.returncode == 2 and diagnostic in result.stderr
+        assert git(root, "rev-parse", "HEAD") == head and sha(root, "dna") == base
+        assert queue_state(root) == queue
+
+
+def test_broken_policy_stops_direct_calls_before_opening_lock(root):
+    s = build_server(root)
+    set_direct(root, {"types": []})
+    args = dict(actor=ACTOR, concept_id="notes/a", expect_sha256=sha(root, "notes/a"), content=seed_text())
+    assert tool(s, "okfy_write", **args)["error"] == "E_DIRECT_TYPE"
+    move = request("move", "notes/a", "notes/c", {"notes/a": args["expect_sha256"], "notes/c": "absent"})
+    assert tool(s, "okfy_reorganize", **move)["error"] == "E_DIRECT_TYPE"
+    assert not (root / ".okfy-cache/review.lock").exists()
+
+
+def test_policy_change_during_proposal_reply(root, monkeypatch):
+    from okfy_mcp import handlers
+
+    def fail_render(*args):
+        set_direct(root, {"prefixes": []})
+        raise OSError("fixture read-back failure after filing")
+
+    s = build_server(root)
+    monkeypatch.setattr(handlers, "_proposal_reply", fail_render)
+    head, base = git(root, "rev-parse", "HEAD"), sha(root, "dna")
+    out = tool(s, "okfy_write", concept_id="dna", expect_sha256=base, actor=ACTOR, content=seed_text())
+    row, = (root / memory.MEMORY_FILE).read_text().splitlines()
+    filed = json.loads(row)["proposal"]
+    assert Bundle(root).get(filed).body == "Candidate."
+    assert git(root, "rev-parse", "HEAD") == head and sha(root, "dna") == base
+    assert out.get("effect") == "filed", out
+    assert out["persisted"] and out["channel"] == "proposal" and out["warnings"]
+    assert out["proposal"] == filed and out["path"] == f"{filed}.md"

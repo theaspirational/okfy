@@ -99,8 +99,8 @@ concept type listed under `direct.types` in `meta/purpose.md`. A bundle with no
 `direct` block has no such lane — every `okfy_write` there becomes a proposal —
 so the guarantee holds for it exactly as before. The fallback is this adapter's:
 the CLI `okfy write` refuses the same call (exit 2, `E_DIRECT_LANE` or
-`E_DIRECT_DISABLED`) and writes nothing, and on a workspace directory it reads
-the workspace as a bundle with no lane (`E_DIRECT_DISABLED`). There is no `okfy_validate` tool —
+`E_DIRECT_DISABLED`) and writes nothing. It requires a readable bundle policy; point it
+at a member bundle, not the workspace. There is no `okfy_validate` tool —
 validation is a maintainer operation, not a consumption one.
 
 ## The read contract is additive only

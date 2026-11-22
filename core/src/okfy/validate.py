@@ -627,12 +627,42 @@ def direct_policy(
     return list(types), problems
 
 
-def checked_direct_policy(bundle: Bundle):
-    """A mutation must never interpret an invalid policy as an absent lane."""
-    policy, problems = direct_policy(bundle.purpose())
+def _mutation_purpose(bundle: Bundle) -> dict:
+    # Bundle.purpose()'s read-side default {} also covers missing/inaccessible
+    # files. Only a successfully read document can establish the absence of rules.
+    unavailable = ("E_DIRECT_POLICY: meta/purpose.md unavailable — restore the "
+                   "intended configuration offline before writing or reviewing")
+    try:
+        purpose = bundle.get("meta/purpose")
+    except OSError as exc:
+        raise ValueError(unavailable) from exc
+    if purpose is None:
+        raise ValueError(unavailable)
+    return purpose.meta
+
+
+def _checked_direct_policy(meta: dict):
+    policy, problems = direct_policy(meta)
     if problems:
         raise ValueError(f"{problems[0][0]}: meta/purpose.md: {problems[0][1]}")
     return policy
+
+
+def checked_direct_policy(bundle: Bundle):
+    """Direct and structural mutations must refuse every invalid lane."""
+    return _checked_direct_policy(_mutation_purpose(bundle))
+
+
+def review_path_policy(bundle: Bundle) -> PathPolicy | None:
+    """Path guards for filing/consuming proposals. Never authorizes direct writes."""
+    meta = _mutation_purpose(bundle)
+    direct = meta.get("direct")
+    if isinstance(direct, dict) and direct.keys() == {"types"}:
+        # Even a broken type lane imposes no path restrictions on owner review.
+        # Unknown keys, mixed rules and non-mappings provide no such assurance.
+        return None
+    policy = _checked_direct_policy(meta)
+    return policy if isinstance(policy, PathPolicy) else None
 
 
 def _check_direct(bundle: Bundle, archetype, r: Report, strict: bool = False):

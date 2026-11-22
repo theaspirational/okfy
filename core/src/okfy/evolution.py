@@ -396,7 +396,7 @@ def _check_retirement(bundle, docs, source):
 def reorganize(bundle, *, action, source, destination, bases, actor, operation_id,
                extract=None, archetype=None):
     actor = check_actor(actor)
-    with p.review_lock(bundle):
+    with p.review_lock(bundle, direct=True):
         policy = checked_direct_policy(bundle)
         if not isinstance(policy, PathPolicy):
             refuse("operator must configure direct.prefixes")

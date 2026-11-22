@@ -10,6 +10,14 @@ how `okfy query` ranks a single bundle. The contributed retrieval change (the fi
 contributed subsections below) does: it moves the retrieval code digest (see there), and
 the round-19 subsection moves it a second time.
 
+### Proposal review with a broken direct lane
+
+Explicit proposal filing and owner accept/reject work again when a readable
+`direct` block contains only `types`, even if the lane is invalid. No direct
+writes are enabled. Ambiguous or unreadable policy still stops the queue;
+see [the recovery procedure](docs/evolutionary-memory.md). MCP now reports a
+successful filing even if reading back its review details fails.
+
 ### okfy_overview(listing=true): the concepts as they are now
 
 An agent that keeps a standing set of concepts in front of its conversation

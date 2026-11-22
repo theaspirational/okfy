@@ -30,7 +30,7 @@ from okfy.transcript_lint import _SEGMENT
 from okfy.validate import (LINK_RE, PathPolicy, Report, _check_archetype, _declared_types,
                            _index_mode, _norm, _shard_files, _source_checker,
                            archetype_applies, checked_direct_policy, ledger_prefix_check,
-                           resolve_link, review_due_date)
+                           resolve_link, review_due_date, review_path_policy)
 
 ACTIONS = {"create", "update", "delete", "supersede", "flag", "gap"}
 # v0.24 (a): a flag's --type — closed, like ACTIONS itself: an unrecognised
@@ -191,7 +191,7 @@ def query_hash(q: str) -> str:
 
 
 @contextlib.contextmanager
-def review_lock(bundle: Bundle):
+def review_lock(bundle: Bundle, *, direct=False):
     """One accept or reject at a time per bundle. The base check and the write
     must be one step: checked apart, two accepts from the same base can both
     pass the check and the second still erases the first.
@@ -200,7 +200,10 @@ def review_lock(bundle: Bundle):
     an untracked lock under proposals/ would dirty every bundle's worktree."""
     from okfy.index import index_path
     lock = index_path(bundle).parent / "review.lock"
-    if isinstance(checked_direct_policy(bundle), PathPolicy):
+    # A broken type-only lane can still be reviewed, but a direct operation
+    # must refuse it before even opening the lock file.
+    policy = checked_direct_policy(bundle) if direct else review_path_policy(bundle)
+    if isinstance(policy, PathPolicy):
         from okfy.evolution import regular_path
         regular_path(bundle, lock)
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -674,8 +677,8 @@ def _prepare_proposal(bundle: Bundle, meta: dict, body: str, target: str | None 
     silently clobber the first at materialize time. `sibling_gap_open_count`
     is how many earlier OK gap entries in this same batch, by this same
     actor, `_gate`'s on-disk GAP_CAP count cannot see yet."""
-    policy = checked_direct_policy(bundle)
-    if isinstance(policy, PathPolicy):
+    policy = review_path_policy(bundle)
+    if policy is not None:
         from okfy.evolution import proposal_targets, regular_path
         proposal_targets(bundle, policy, "update" if extends else action, extends or target, new_id)
     if extends is not None:
@@ -745,7 +748,7 @@ def _prepare_proposal(bundle: Bundle, meta: dict, body: str, target: str | None 
     old_env: dict = {}
     if supersedes is not None:
         old_proposal = _load_proposal(bundle, supersedes)
-        if isinstance(policy, PathPolicy):
+        if policy is not None:
             regular_path(bundle, old_proposal.path)
         old_env = old_proposal.meta.get("proposal") or {}
         old_actor = (old_proposal.meta.get("generated") or {}).get("by")
@@ -868,7 +871,7 @@ def _materialize_proposal(bundle: Bundle, prepared: dict) -> Path:
     never actually be missing, but a write half that trusts that from a
     second, unrelated code path is the one that stayed broken."""
     path = prepared["path"]
-    if isinstance(checked_direct_policy(bundle), PathPolicy):
+    if review_path_policy(bundle) is not None:
         from okfy.evolution import regular_path
         regular_path(bundle, path)
         regular_path(bundle, bundle.root / memory.MEMORY_FILE)
@@ -1855,8 +1858,8 @@ def _accept(bundle: Bundle, proposal_id: str, archetype=None, *,
     # look like one.
     target = env.get("target") or (
         c.id.removeprefix(f"{PROPOSAL_DIR}/") if action not in ("flag", "gap") else None)
-    policy = checked_direct_policy(bundle)
-    if isinstance(policy, PathPolicy):
+    policy = review_path_policy(bundle)
+    if policy is not None:
         from okfy.evolution import proposal_targets, regular_path
         regular_path(bundle, c.path)
         proposal_targets(bundle, policy, action, env.get("target"), env.get("new_id"))
@@ -2137,7 +2140,7 @@ def _reject(bundle: Bundle, proposal_id: str, reason: str = "", *,
     # `_refuse_if_ledger_rewritten`'s docstring. `_commit` below still
     # re-checks as the backstop.
     _refuse_if_ledger_rewritten(bundle, memory.MEMORY_FILE)
-    if isinstance(checked_direct_policy(bundle), PathPolicy):
+    if review_path_policy(bundle) is not None:
         from okfy.evolution import regular_path
         for path in (c.path, bundle.root / "log.md", bundle.root / memory.MEMORY_FILE):
             regular_path(bundle, path)
@@ -2290,8 +2293,8 @@ def propose_checked(bundle: Bundle, meta: dict, body: str, target: str,
     for a create). Check and filing share one `review_lock`, so the
     `base_sha256` the proposal records is the base the author actually saw."""
     with review_lock(bundle):
-        policy = checked_direct_policy(bundle)
-        if isinstance(policy, PathPolicy):
+        policy = review_path_policy(bundle)
+        if policy is not None:
             from okfy.evolution import proposal_targets
             if kw.get("extends") is not None:
                 target, action = kw["extends"], "update"
@@ -2399,7 +2402,7 @@ def write_direct(bundle: Bundle, concept_id: str, *, actor: str, expect_sha256: 
                 f"{E_DIRECT_TARGET}: a patch edits an existing concept's body, "
                 f"and expect_sha256={ABSENT!r} says {concept_id} does not "
                 "exist — pass content to create it")
-    with review_lock(bundle):
+    with review_lock(bundle, direct=True):
         return _write_direct(bundle, concept_id, actor, expect_sha256, text, hunks,
                              note, observed, archetype, create, evidence, operation_id)
 

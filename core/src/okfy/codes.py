@@ -78,6 +78,26 @@ CODES: dict[str, dict] = {
         "summary": 'meta/purpose.md `write_policy` is not exactly "proposals" or "direct"',
         "way_out": "set write_policy to exactly one of the two literals — the pre-commit hook matches the literal, so a near-miss disables the gate silently",
     },
+    "E_MEMORY_OPERATION": {
+        "kind": "error",
+        "summary": "an evolutionary-memory-v1 mutation failed a precondition",
+        "way_out": "check the reported path, operation, receipt or expected bases",
+    },
+    "E_MEMORY_REPOSITORY": {
+        "kind": "error",
+        "summary": "the pilot could not check its standalone Git repository",
+        "way_out": "inspect the repository before retrying",
+    },
+    "E_MEMORY_ROLLBACK": {
+        "kind": "error",
+        "summary": "memory mutation failed; the before-images were restored at unchanged HEAD",
+        "way_out": "inspect the bundle repository before retrying",
+    },
+    "E_MEMORY_UNCERTAIN": {
+        "kind": "error",
+        "summary": "memory persistence, rollback or the committed receipt could not be confirmed",
+        "way_out": "reconcile a direct operation with its identical request; otherwise inspect before retry",
+    },
     "E_DIRECT_POLICY": {
         "kind": "error",
         "summary": "meta/purpose.md declares a `direct` block but write_policy is not `proposals`, so the block does nothing",
@@ -85,8 +105,8 @@ CODES: dict[str, dict] = {
     },
     "E_DIRECT_KEY": {
         "kind": "error",
-        "summary": "meta/purpose.md `direct` is not a mapping, or has a key other than `types`",
-        "way_out": "write it as `direct: {types: [<type>, ...]}` and remove any other key",
+        "summary": "meta/purpose.md `direct` is not a mapping, or has an unknown key",
+        "way_out": "choose direct.types or direct.profile and remove unknown keys",
     },
     "E_DIRECT_TYPE": {
         "kind": "error",

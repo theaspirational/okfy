@@ -538,7 +538,12 @@ def _check_write_policy(bundle: Bundle, r: Report):
 # without review while everything else stays behind `write_policy: proposals`.
 # Closed for the reason `acceptance` is: a misspelled key is a lane that
 # silently never opens, or one the owner believes is narrower than it is.
-DIRECT_KEYS = ("types",)
+MEMORY_PROFILE = "evolutionary-memory-v1"
+DIRECT_KEYS = ("types", "profile")
+
+
+def memory_profile(purpose_meta: dict) -> bool:
+    return purpose_meta.get("direct") == {"profile": MEMORY_PROFILE}
 
 
 def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str, str]]]:
@@ -575,6 +580,12 @@ def direct_policy(purpose_meta: dict) -> tuple[list[str] | None, list[tuple[str,
             f"unknown direct key(s) {unknown} (known: {list(DIRECT_KEYS)}) — "
             "remove them; an unrecognised key is a policy that silently does "
             "nothing"))
+    if "profile" in direct:
+        if not memory_profile(purpose_meta) or "preedit" in purpose_meta:
+            problems.append(("E_DIRECT_POLICY",
+                             f"expected direct: {{profile: {MEMORY_PROFILE}}} without "
+                             "types or preedit — memory pages cannot be governing rules"))
+        return None, problems
     types = direct.get("types")
     if (not isinstance(types, list) or not types
             or any(not isinstance(t, str) or not t.strip() for t in types)):
@@ -666,6 +677,8 @@ def preedit_policy(purpose_meta: dict, declared: set | None = None
                                    f"type {sorted(declared)}, so no concept can have it and it "
                                    "governs nothing — fix the name, or declare the type in "
                                    "meta/extraction-plan.md `types`"))
+    if memory_profile(purpose_meta):
+        problems.append((code, "preedit cannot coexist with the evolutionary memory profile"))
     direct_types, _ = direct_policy(purpose_meta)
     both = sorted(t for t in types if t in (direct_types or []))
     if both:

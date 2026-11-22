@@ -1,3 +1,5 @@
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -112,3 +114,49 @@ class Bundle:
 
     def plan(self) -> Concept | None:
         return self.get("meta/extraction-plan")
+
+
+def listing_paths(bundle, unreadable: list[str]):
+    """Live concept discovery: surface failed subtrees, never follow links.
+
+    Keep Bundle.iter_md_files' root exclusions without changing legacy scans.
+    A trailing slash in unreadable denotes an unenumerated directory (./ for
+    the root); other entries name concept ids or refused symlink paths.
+    """
+    pending = [bundle.root]
+    excluded = SKIP_DIRS | RESERVED_DIRS | {DRAFT_DIR, PROPOSAL_DIR}
+    while pending:
+        directory = pending.pop()
+        rel_dir = directory.relative_to(bundle.root).as_posix()
+        try:
+            with os.scandir(directory) as scan:
+                children = sorted(scan, key=lambda e: e.name)
+        except OSError:
+            unreadable.append(rel_dir + "/")
+            continue
+        for entry in children:
+            path = directory / entry.name
+            if directory == bundle.root and entry.name in excluded:
+                continue
+            rel = path.relative_to(bundle.root).as_posix()
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError:
+                unreadable.append(bundle.concept_id(path) if path.suffix == ".md" else rel)
+                continue
+            if stat.S_ISDIR(mode):
+                pending.append(path)
+                continue
+            if entry.name in RESERVED_FILES:
+                continue
+            if directory == bundle.root and entry.name in ROOT_DOC_FILES:
+                continue
+            if stat.S_ISLNK(mode):
+                # Refuse even in-root links: do not inspect a target to decide
+                # whether an otherwise skipped link is an unreadable subtree.
+                unreadable.append(bundle.concept_id(path) if path.suffix == ".md" else rel + "/")
+            elif path.suffix == ".md":
+                if stat.S_ISREG(mode):
+                    yield path
+                else:
+                    unreadable.append(bundle.concept_id(path))

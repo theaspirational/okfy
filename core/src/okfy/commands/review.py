@@ -182,13 +182,14 @@ def cmd_refine(a) -> int:
 
 def cmd_write(a) -> int:
     b = Bundle(a.bundle)
-    _print(write_direct(
+    result = write_direct(
         b, a.concept_id, actor=a.actor, expect_sha256=a.expect, note=a.note,
         text=a.from_file.read_text(encoding="utf-8") if a.from_file else None,
         patch=json.loads(a.patch_file.read_text(encoding="utf-8"))
         if a.patch_file else None,
-        archetype=_archetype_for(b)))
-    return 0
+        archetype=_archetype_for(b))
+    _print(result)
+    return 1 if "error" in result else 0
 
 
 def cmd_dismiss(a) -> int:

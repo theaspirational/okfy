@@ -67,7 +67,8 @@ def record(bundle, event: str, *, actor: str, proposal: str | None, target: str 
            reason: str | None = None, reopen: str | None = None,
            match_sha256: str | None = None, new_id: str | None = None,
            by_proposal: str | None = None, origin: str | None = None,
-           channel: str | None = None, observed: dict | None = None) -> dict:
+           channel: str | None = None, observed: dict | None = None,
+           receipt: dict | None = None) -> dict:
     if event not in EVENTS:
         raise ValueError(f"unknown memory event {event!r} (use: {list(EVENTS)})")
     row = {"event": event, "at": utc_now(), "actor": actor, "proposal": proposal,
@@ -75,7 +76,7 @@ def record(bundle, event: str, *, actor: str, proposal: str | None, target: str 
     for k, v in (("base_sha256", base_sha256), ("reason", reason), ("reopen", reopen),
                  ("match_sha256", match_sha256), ("new_id", new_id),
                  ("by_proposal", by_proposal), ("origin", origin),
-                 ("channel", channel), ("observed", observed)):
+                 ("channel", channel), ("observed", observed), ("receipt", receipt)):
         if v is not None:
             row[k] = v
     path = bundle.root / MEMORY_FILE
@@ -90,7 +91,8 @@ def record(bundle, event: str, *, actor: str, proposal: str | None, target: str 
         size = os.fstat(fd).st_size
         if size and os.pread(fd, 1, size - 1) != b"\n":
             line = b"\n" + line
-        os.write(fd, line)
+        if os.write(fd, line) != len(line):
+            raise OSError("short memory ledger write")
     finally:
         os.close(fd)
     return row

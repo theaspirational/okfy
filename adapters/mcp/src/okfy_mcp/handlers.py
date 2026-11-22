@@ -3,16 +3,13 @@ No MCP types here — server.py owns the protocol surface, this owns the logic."
 import functools
 import hashlib
 import inspect
-import os
 import re
-import stat
 from urllib.parse import unquote
 
 from okfy import federate, frontmatter, history, memory, preedit as core_preedit
 from okfy import proposals, query as q
 from okfy import passages as core_passages
-from okfy.bundle import (DRAFT_DIR, PROPOSAL_DIR, RESERVED_DIRS, RESERVED_FILES,
-                         ROOT_DOC_FILES, SKIP_DIRS)
+from okfy.bundle import listing_paths as _listing_paths
 from okfy.codes import CODES
 from okfy.commands.common import _archetype_for
 from okfy.index import load_index
@@ -630,52 +627,6 @@ def _stale_keys(bundle, served: dict[str, bytes] | None = None) -> dict:
     return {}
 
 
-def _listing_paths(bundle, unreadable: list[str]):
-    """Listing-only discovery: surface failed subtrees, never follow links.
-
-    Keep Bundle.iter_md_files' root exclusions without changing legacy scans.
-    A trailing slash in unreadable denotes an unenumerated directory (./ for
-    the root); other entries name concept ids or refused symlink paths.
-    """
-    pending = [bundle.root]
-    excluded = SKIP_DIRS | RESERVED_DIRS | {DRAFT_DIR, PROPOSAL_DIR}
-    while pending:
-        directory = pending.pop()
-        rel_dir = directory.relative_to(bundle.root).as_posix()
-        try:
-            with os.scandir(directory) as scan:
-                children = sorted(scan, key=lambda e: e.name)
-        except OSError:
-            unreadable.append(rel_dir + "/")
-            continue
-        for entry in children:
-            path = directory / entry.name
-            if directory == bundle.root and entry.name in excluded:
-                continue
-            rel = path.relative_to(bundle.root).as_posix()
-            try:
-                mode = entry.stat(follow_symlinks=False).st_mode
-            except OSError:
-                unreadable.append(bundle.concept_id(path) if path.suffix == ".md" else rel)
-                continue
-            if stat.S_ISDIR(mode):
-                pending.append(path)
-                continue
-            if entry.name in RESERVED_FILES:
-                continue
-            if directory == bundle.root and entry.name in ROOT_DOC_FILES:
-                continue
-            if stat.S_ISLNK(mode):
-                # Refuse even in-root links: do not inspect a target to decide
-                # whether an otherwise skipped link is an unreadable subtree.
-                unreadable.append(bundle.concept_id(path) if path.suffix == ".md" else rel + "/")
-            elif path.suffix == ".md":
-                if stat.S_ISREG(mode):
-                    yield path
-                else:
-                    unreadable.append(bundle.concept_id(path))
-
-
 def _listing_metadata(meta: dict) -> dict:
     """Small wire policy, not arbitrary YAML-to-string conversion.
 
@@ -951,6 +902,19 @@ def h_propose(t: Target, target: str, action: str, note: str,
         if env is None:
             raise
         return env
+    try:
+        return _proposal_reply(t, path, meta, distinct_from)
+    except Exception:
+        if not proposals._pilot_declared(t.bundle):
+            raise
+        # The call to core succeeded; do not turn a subsequent presentation
+        # failure (e.g. owner consumed the file) into a "nothing written" error.
+        return {"proposal": t.bundle.concept_id(path), "persisted": True,
+                "path": path.relative_to(t.bundle.root).as_posix(),
+                "warnings": ["proposal filed; could not read back review details"]}
+
+
+def _proposal_reply(t, path, meta, distinct_from):
     c = t.bundle.get(t.bundle.concept_id(path))
     env = c.meta.get("proposal") or {}
     near = env.get("near") or []
@@ -1003,7 +967,7 @@ def _schema(bundle):
 def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
             content: str | None = None, patch: list[dict] | None = None,
             note: str = "", evidence: dict | None = None,
-            session: Session | None = None) -> dict:
+            session: Session | None = None, operation_id: str | None = None) -> dict:
     """Write a concept against the sha256 the agent read. The bundle's
     `direct.types` decides where it goes, not the agent: a type in the direct
     lane lands at once (`channel: "direct"`, with the new file's `sha256`);
@@ -1036,6 +1000,7 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
         out = proposals.write_direct(
             t.bundle, concept_id, actor=actor, expect_sha256=expect_sha256,
             text=content or None, patch=patch, note=note, observed=observed,
+            evidence=evidence, operation_id=operation_id,
             archetype=functools.partial(_schema, t.bundle))
     except ValueError as e:
         env = _refusal_envelope(e)
@@ -1054,6 +1019,8 @@ def h_write(t: Target, concept_id: str, actor: str, expect_sha256: str,
                         patch=patch, session=session, expect_sha256=expect_sha256)
         if "error" not in out:
             out["channel"] = "proposal"
+        return out
+    if "error" in out:
         return out
     return {"proposal": None, "path": f"{concept_id}.md", **out}
 

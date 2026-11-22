@@ -2,7 +2,7 @@
 
 An isolated adapter that exposes one OKF Bundle (or a federation Workspace) to
 any [MCP](https://modelcontextprotocol.io) client over **stdio**. It imports the
-`okfy` core in-process and wraps eleven handlers as MCP tools: nine read tools
+`okfy` core in-process and normally wraps eleven handlers as MCP tools: nine read tools
 (`okfy_query`, `okfy_show`, `okfy_links`, `okfy_overview`, `okfy_fresh`, `okfy_diff`,
 `okfy_history`, `okfy_changes` and the pre-edit lookup `okfy_preedit`), one proposals-only write tool (`okfy_propose`), and
 `okfy_write`, which lands at once only for the concept
@@ -11,6 +11,12 @@ a remote agent can both *consume* a bundle and *enrich* it, with the human revie
 left intact wherever the owner has not said otherwise. (The CLI `okfy write` does not
 fall back: for a type the owner did not open it exits 2, `E_DIRECT_LANE`, or
 `E_DIRECT_DISABLED` when the bundle lists none.)
+
+**Opt-in pilot:** [Evolutionary agent memory](../../docs/evolutionary-memory.md)
+replaces type routing with direct `core/` and `notes/` writes, proposal-only
+`dna`, committed operation receipts, and one additional tool,
+`okfy_reorganize`. The default tool and result descriptions below describe
+bundles **without** this profile.
 
 This is a **separate package**. The MCP SDK lives here, never in core: the OKFy
 core stays PyYAML-only and portable, and the daemon carries the SDK weight in
